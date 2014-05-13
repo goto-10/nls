@@ -25,7 +25,6 @@ end;
 structure UnitTests = struct
 
   (* Abbreviations for modules. *)
-  structure A = Ast;
   structure G = Guard;
   structure Sc = Score;
   structure Tt = Test;
@@ -42,6 +41,7 @@ structure UnitTests = struct
   val Obj = V.Object;
   val Score = Sc.Score;
   val Str = V.String;
+  val Uid = V.Uid;
 
   val scEq = Sc.scEq;
   val scIs = Sc.scIs;
@@ -51,16 +51,15 @@ structure UnitTests = struct
   val assert_false = Tt.assert_false;
   val assert_true = Tt.assert_true;
   val eq = G.eq
-  val genid = V.genid;
-  val new_id_factory = V.new_id_factory;
+  val genuid = V.genuid;
 
-  (* Test that the object identity factory works sensibly. *)
+  (* Test that the value identity stream works sensibly. *)
   fun test_id_factory () =
     let
-      val factory = new_id_factory ()
-      val i0 = (genid factory)
-      val i1 = (genid factory)
-      val i2 = (genid factory)
+      val s0 = V.uid_stream_start
+      val (i0, s1) = genuid s0
+      val (i1, s2) = genuid s1
+      val (i2, s3) = genuid s2
     in
       assert_true (i0 = i0);
       assert_false (i0 = i1);
@@ -78,9 +77,11 @@ structure UnitTests = struct
   fun test_value_eq () =
     let
       val == = V.==
-      val factory = new_id_factory ()
-      val o0 = Obj (genid factory)
-      val o1 = Obj (genid factory)
+      val s0 = V.uid_stream_start
+      val (i0, s1) = genuid s0
+      val o0 = Obj i0
+      val (i1, s2) = genuid s1
+      val o1 = Obj i1
     in 
       assert_true (== (Int 9) (Int 9));
       assert_false (== (Int 10) (Int 11));
@@ -223,33 +224,88 @@ structure UnitTests = struct
 
   fun test_full_parsing () =
     let
-      val Var = A.Variable;
-      val Seq = A.Sequence;
-      val WEs = A.WithEscape;
-      val Lit = A.Literal;
-      val Def = A.LocalBinding;
+      val Var = V.Variable;
+      val Seq = V.Sequence;
+      val WEs = V.WithEscape;
+      val Lit = V.Literal;
+      val Def = V.LocalBinding;
       fun check_parse expected input =
         assert_equals expected (P.parse input)
     in
-      check_parse (Var "foo") "$foo";
+      check_parse (Var (Str "foo")) "$foo";
       check_parse (Lit (Int 10)) "10";
-      check_parse (WEs ("s", Var "t")) "(with_escape $s $t)";
-      check_parse (Seq [Var "a", Var "b"]) "(begin $a $b)";
-      check_parse (Seq [Var "a"]) "(begin $a)";
+      check_parse (WEs (Str "s", Var (Str "t"))) "(with_escape $s do $t)";
+      check_parse (Seq [Var (Str "a"), Var (Str "b")]) "(begin $a $b)";
+      check_parse (Seq [Var (Str "a")]) "(begin $a)";
       check_parse (Lit Null) "(begin)";
-      check_parse (Def ("a", Lit (Int 3), Var "a")) "(def $a := 3 in $a)";
+      check_parse (Def (Str "a", Lit (Int 3), Var (Str "a"))) "(def $a := 3 in $a)";
       ()
     end;
 
   fun test_eval () =
     let
-      fun check_eval expected input =
-        assert_equals expected (E.eval (P.parse input))
+      fun check_eval expected_result expected_log input =
+        let
+          val (result, p0) = (E.eval (P.parse input))
+          val log = (#log p0)
+        in
+          assert_equals expected_result result;
+          assert_equals expected_log log;
+          ()
+        end
     in
-      check_eval Null "(begin)";
-      check_eval (Int 3) "3";
-      check_eval (Int 4) "(begin 2 3 4)";
-      check_eval (Int 8) "(def $a := 8 in $a)";
+      check_eval Null [] "(begin)";
+      check_eval Null [] "null";
+      check_eval (Int 3) [] "3";
+      check_eval (Int 4) [] "(begin 2 3 4)";
+      check_eval (Int 8) [] "(def $a := 8 in $a)";
+      check_eval (Obj (Uid 0)) [] "(new)";
+      check_eval (Obj (Uid 1)) [] "(begin (new) (new))";
+      check_eval (Obj (Uid 0)) [] "(def $x := (new) in $x)";
+      check_eval (Int 3) [Int 3] "(log 3)";
+      check_eval (Int 7) [Int 5, Int 6, Int 7] "(begin (log 5) (log 6) (log 7))";
+      check_eval (Int 5) [] "(with_escape $e do (call $e 5))";
+      check_eval (Int 6) [] "(with_escape $e do (log (call $e 6)))";
+      check_eval (Int 7) [Int 1] "(with_escape $e do (begin (log 1) (call $e 7) (log 2)))))";
+      ()
+    end;
+
+  fun test_field_eval () =
+    let
+      fun check_eval expected input =
+        let
+          val code = "(def $f := (new_field) in (def $o := (new) in " ^ input ^ "))"
+          val (result, p0) = (E.eval (P.parse code))
+          val log = (#log p0)
+        in
+          assert_equals expected log
+        end
+    in
+      check_eval [Null] "(log (get $f $o))";
+      check_eval [Null, Int 3, Int 3] "(begin (log (get $f $o)) (log (set $f $o 3)) (log (get $f $o)))";
+      ()
+    end;
+
+  fun test_ensure () =
+    let
+      fun check_ensure expected input =
+        let
+          val (result, p0) = (E.eval (P.parse input))
+          val log = (#log p0)
+        in
+          assert_equals expected log
+        end
+    in
+      check_ensure [Int 4, Int 5, Int 4] "(log (after (log 4) ensure (log 5)))";
+      check_ensure [Int 6, Int 7, Int 9] (
+        "(with_escape $e do " ^
+          "(begin" ^ 
+            "(log 6)" ^
+              "(after (begin" ^
+                "(log 7)" ^
+                "(call $e 5)" ^
+                "(log 8))" ^
+              " ensure (log 9))))");
       ()
     end;
 
@@ -273,6 +329,8 @@ structure UnitTests = struct
       run_test test_sexp_parsing "test_sexp_parsing";
       run_test test_full_parsing "test_full_parsing";
       run_test test_eval "test_eval";
+      run_test test_field_eval "test_field_eval";
+      run_test test_ensure "test_ensure";
       ()
     end;
 

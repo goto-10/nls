@@ -1,3 +1,6 @@
+use "utils.sml";
+use "value.sml";
+
 (* Stuff related to working with individual scores. *)
 structure Score = struct
 
@@ -49,84 +52,13 @@ structure Score = struct
 end;
 
 
-(* Stuff related to runtime values *)
-structure Value = struct
-
-  (* Encapsulated value identity. *)
-  datatype id
-    = Id of int;
-
-  (* Factory value that can be used to produce value identities. *)
-  datatype id_factory
-    = IdFactory of int ref;
-
-  (* Each call to this returns a new fresh id factory. *)
-  fun new_id_factory () = IdFactory (ref 0);
-
-  (* Given an id factory, returns the next id which will be distinct from all
-     ids previously returned. *)
-  fun genid (IdFactory r) =
-    let
-      val serial = !r
-      val next_serial = serial + 1
-      val () = (r := next_serial)
-    in
-      Id serial
-    end;
-
-  (* A runtime value. *)
-  datatype value
-    = Integer of int
-    | String of string
-    | Object of id
-    | Type of id
-    | Null
-  ;
-
-  (* Defines the ordering between values of different types. *)
-  fun value_ordinal (Integer _) = 0
-    | value_ordinal (String _) = 1
-    | value_ordinal (Object _) = 2
-    | value_ordinal (Type _) = 3
-    | value_ordinal Null = 4
-  ;
-
-  (* Given two values, returns true iff they are equal. *)
-  fun op == (Integer a) (Integer b) = (a = b)
-    | op == (String a) (String b) = (a = b)
-    | op == (Object a) (Object b) = (a = b)
-    | op == (Type a) (Type b) = (a = b)
-    | op == Null Null = true
-    | op == _ _ = false
-  ;
-
-  exception NotComparable;
-
-  (* Returns true iff the first argument is less than the second. *)
-  fun less (Integer a) (Integer b) = (a < b)
-    | less (String a) (String b) = (a < b)
-    | less Null Null = false
-    | less a b =
-      let
-        val oa = value_ordinal a
-        val ob = value_ordinal b
-      in
-        if oa = ob
-          (* Only the types listed in the previous clauses are comparable within
-             their categories so this must one that isn't. *)
-          then raise NotComparable
-          else oa < ob
-      end;
-end;
-
-
 (* Stuff related to working with guards. *)
 structure Guard = struct
 
   (* A parameter guard *)
   datatype guard
     = gEq of Value.value
-    | gIs of Value.id
+    | gIs of Value.uid
     | gAny
   ;
 

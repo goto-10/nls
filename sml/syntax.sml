@@ -178,24 +178,50 @@ end;
 structure Parser = struct
 
   structure S = Sexp;
-  structure A = Ast;
   structure V = Value;
 
   exception ParseError of S.sexp;
 
   (* Parse the given generic s-expression as a neutrino s-expression. *)
-  fun parse_expr (S.Integer i) = A.Literal (V.Integer i)
-    | parse_expr (S.Ident n) = A.Variable n
-    | parse_expr (S.List [S.Word "with_escape", S.Ident name, body]) =
-      A.WithEscape (name, parse_expr body)
+  fun parse_expr (S.Integer i) = V.Literal (V.Integer i)
+    (* Null *)
+    | parse_expr (S.Word "null") = V.Literal V.Null
+    (* Identifier *)
+    | parse_expr (S.Ident n) = V.Variable (V.String n)
+    (* WithEscape *)
+    | parse_expr (S.List [S.Word "with_escape", S.Ident name, S.Word "do", body]) =
+      V.WithEscape ((V.String name), parse_expr body)
+    (* Ensure *)
+    | parse_expr (S.List [S.Word "after", body, S.Word "ensure", block]) =
+      V.Ensure (parse_expr body, parse_expr block)
+    (* Sequence *)
     | parse_expr (S.List ((S.Word "begin")::rest)) =
       (* Get rid of trivial sequences at this level so we can assume they have
          length at least one. *)
       (case (map parse_expr rest)
-         of [] => A.Literal (V.Null)
-          | more => A.Sequence more)
+         of [] => V.Literal (V.Null)
+          | more => V.Sequence more)
+    (* Local def *)
     | parse_expr (S.List [S.Word "def", S.Ident name, S.Delimiter ":=", value, S.Word "in", body]) =
-      A.LocalBinding (name, parse_expr value, parse_expr body)
+      V.LocalBinding ((V.String name), parse_expr value, parse_expr body)
+    (* New object *)
+    | parse_expr (S.List [S.Word "new"]) =
+      V.NewObject
+    (* New field *)
+    | parse_expr (S.List [S.Word "new_field"]) =
+      V.NewField
+    (* Get field *)
+    | parse_expr (S.List [S.Word "get", field, object]) =
+      V.GetField (parse_expr field, parse_expr object)
+    (* Set field *)
+    | parse_expr (S.List [S.Word "set", field, object, value]) =
+      V.SetField (parse_expr field, parse_expr object, parse_expr value)
+    (* Log *)
+    | parse_expr (S.List [S.Word "log", value]) =
+      V.Log (parse_expr value)
+    (* Call thunk *)
+    | parse_expr (S.List [S.Word "call", thunk, value]) =
+      V.CallThunk (parse_expr thunk, parse_expr value)
     | parse_expr sexp = raise (ParseError sexp)
 
   (* Parse the given string as a neutrino s-expression, returning a syntax tree. *)
