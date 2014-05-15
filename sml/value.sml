@@ -25,7 +25,11 @@ structure Value = struct
     | Field of uid
     | Type of uid
     | Null
-    | Thunk of value list * ast
+    | Lambda of lexical_scope * value list * ast
+
+  and lexical_scope = LexicalScope of {
+    lookup_variable: (value * value) list
+  }
 
   (* Kernel language syntax. Some of these are surface-level, some are synthetic
      for instance FireEscape which you can't write in the syntax but which
@@ -46,7 +50,7 @@ structure Value = struct
     | GetField of ast * ast
     (* Debug/test *)
     | Log of ast
-    | CallThunk of ast * ast
+    | CallLambda of ast * ast
   ;
 
   datatype value_mode

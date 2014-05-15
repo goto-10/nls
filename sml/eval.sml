@@ -85,33 +85,16 @@ structure Eval = struct
      the pervasive state is always passed in. *)
   type continuation = V.value -> pervasive_state -> V.value * pervasive_state;
 
-  (* Scoped state. Leaving a scope implicitly restores the outer scope state. *)
-  type lexical_scope_state = {
-    (* The current variable resolution function. *)
-    lookup_variable: V.value -> V.value option
+  val toplevel_lexical_scope = V.LexicalScope {
+    lookup_variable = []
   };
-
-  fun toplevel_lookup_variable name = NONE;
-
-  val toplevel_lexical_scope_state : lexical_scope_state = {
-    lookup_variable = toplevel_lookup_variable
-  };
-
-  (* Returns a new scope state with the given lookup function as the variable
-     resolver. *)
-  fun set_lookup_variable ({...} : lexical_scope_state) value
-    = {lookup_variable=value};
 
   (* Returns a new scope state where the given name is bound to the given value. *)
   fun push_binding scope name value =
     let
-      val outer = (#lookup_variable scope)
-      fun lookup n =
-        if (n = name)
-          then (SOME value)
-          else (outer n)
+      val V.LexicalScope {lookup_variable=outer} = scope
     in
-      set_lookup_variable scope lookup
+      V.LexicalScope {lookup_variable=(name, value)::outer}
     end;
 
   (* An escape continuation, the next step in performing a non-local escape.
@@ -168,13 +151,13 @@ structure Eval = struct
       => step_set_field field object value continue state
        | V.Log value
       => step_log value continue state
-       | V.CallThunk (thunk, value)
-      => step_call_thunk thunk value continue state
+       | V.CallLambda (lambda, value)
+      => step_call_lambda lambda value continue state
 
   and step_with_escape name body continue (s0, d0, p0) =
     let
       (* Acquire an ie for this escape. This'll be used to identify this as the
-         destination for the escape thunk. *)
+         destination for the escape lambda. *)
       val (escape_id, p1) = genuid p0
       (* Grab the non_local that was in effect immediately before this
          expression. *)
@@ -189,13 +172,14 @@ structure Eval = struct
              escape so we just let it keep going through the next outer
              nonlocal and discard this expression and its continuation. *)
           else (outer_escape target_id value p2)
-      val outer_lookup_variable = (#lookup_variable s0)
       (* Install the new non-local. *)
       val d1 = set_escape d0 escape
       (* Create a binding for the symbol. *)
       val param = V.String "value"
-      val escape_thunk = V.Thunk ([param], (V.FireEscape (escape_id, V.Variable param)))
-      val s1 = push_binding s0 name escape_thunk
+      val scope = toplevel_lexical_scope
+      val body = V.FireEscape (escape_id, V.Variable param)
+      val escape_lambda = V.Lambda (scope, [param], body)
+      val s1 = push_binding s0 name escape_lambda
     in
       step body continue (s1, d1, p1)
     end
@@ -248,11 +232,14 @@ structure Eval = struct
 
   and step_variable name continue (s0, _, p0) =
     let
-      val lookup = (#lookup_variable s0)
+      val (V.LexicalScope {lookup_variable=bindings, ...}) = s0
+      fun get_binding [] = raise (UnresolvedVariable name)
+        | get_binding ((n, v)::rest) =
+          if (V.== n name)
+            then v
+            else get_binding rest
     in
-      case lookup name
-        of SOME value => (continue value p0)
-         | NONE => raise (UnresolvedVariable name)
+      continue (get_binding bindings) p0
     end
 
   and step_sequence [only] continue state =
@@ -365,26 +352,26 @@ structure Eval = struct
       step value_expr continue_log (s0, d0, p0)
     end
 
-  and step_call_thunk thunk_expr value_expr continue (s0, d0, p0) =
+  and step_call_lambda lambda_expr value_expr continue (s0, d0, p0) =
     let
-      fun continue_eval_value (V.Thunk ([param], thunk_body)) p1 =
+      fun continue_eval_value (V.Lambda (sl0, [param], lambda_body)) p1 =
         let
-          fun continue_call_thunk value p2 =
+          fun continue_call_lambda value p2 =
             let
-              val s1 = push_binding s0 param value
+              val sl1 = push_binding sl0 param value
             in
-              step thunk_body continue (s1, d0, p2)
+              step lambda_body continue (sl1, d0, p2)
             end
         in
-          step value_expr continue_call_thunk (s0, d0, p1)
+          step value_expr continue_call_lambda (s0, d0, p1)
         end
     in
-      step thunk_expr continue_eval_value (s0, d0, p0)
+      step lambda_expr continue_eval_value (s0, d0, p0)
     end
 
   fun yield_value value pervasive = (value, pervasive);
 
-  val initial_state = (toplevel_lexical_scope_state,
+  val initial_state = (toplevel_lexical_scope,
     toplevel_dynamic_scope_state, initial_pervasive_state)
 
   (* Evaluates the given parsed expression, returning a pair of the result value

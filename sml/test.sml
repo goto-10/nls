@@ -1,3 +1,6 @@
+CM.make "$smlnj-tdp/back-trace.cm";
+SMLofNJ.Internals.TDP.mode := true;
+
 use "neutrino.sml";
 
 (* Simple assertion library. Why does SML not come with something like this (or
@@ -337,7 +340,7 @@ structure UnitTests = struct
 end;
 
 (* Run *all* the tests. *)
-UnitTests.test_all ();
+BackTrace.monitor (fn () => UnitTests.test_all ());
 
 (* Exit explicitly otherwise the interpreter will hang. *)
 val _ = OS.Process.exit(OS.Process.success);

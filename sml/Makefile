@@ -1,5 +1,5 @@
 # Suppress pointless polyEqual warning.
-SMLFLAGS=-Ccontrol.poly-eq-warn=false
+SMLFLAGS=-Ccontrol.poly-eq-warn=false -Ctdp.instrument=true
 
 FILES=         \
 eval.sml       \

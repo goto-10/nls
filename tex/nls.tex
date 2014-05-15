@@ -1,0 +1,237 @@
+\documentclass{article}
+\usepackage{amsfonts}
+\begin{document}
+
+\newcommand{\op}[1]{\mathsf{#1}}
+\newcommand{\cnt}{c}
+\newcommand{\scst}{\sigma}
+\newcommand{\dyst}{\delta}
+\newcommand{\pest}{\pi}
+\newcommand{\sym}{\iota}
+\newcommand{\prop}[1]{\mathsf{#1}}
+\newcommand{\fun}[1]{\mathsf{#1}}
+\newcommand{\type}[1]{\mathcal{#1}}
+\newcommand{\val}[1]{\mathsf{#1}}
+\newcommand{\eval}{\mathcal{E}}
+\newcommand{\syn}[1]{\mathsf{#1}}
+\newcommand{\bif}{\quad \mathbf{if} \quad}
+
+\section{Formal semantics}
+
+The brace syntax, ie. $\{ a \in \mathbb{N}, b \in \mathbb{Z} \}$, denotes a
+record with two named fields, $a$ and $b$. (Probably need less confusing syntax
+for this).
+
+\subsection{Definitions}
+
+\[ \iota \in \type{I} \]
+
+An \emph{identity}, and opaque symbol that identifies some object or program
+component. Identities can be compare for equality and an identity is equal only
+to itself.
+
+\begin{eqnarray*}
+v \in \type{V}
+& \in & \val{integer}(\mathbb{Z}) \\
+& | & \val{string}(\Sigma^*) \\
+& | & \val{lambda}(\type{S}, \type{I}^*, \type{A}) \\
+& | & \val{object}(\type{I}) \\
+& | & \ldots
+\end{eqnarray*}
+
+Values.
+
+\begin{eqnarray*}
+a \in \type{A}
+& \in & \syn{with\_escape}(\type{I}, \type{A}) \\
+& | & \syn{ensure}(\type{A}, \type{A}) \\
+& | & \syn{escape}(\type{I}, \type{A}) \\
+& | & \syn{variable}(\type{I}) \\
+& | & \ldots
+\end{eqnarray*}
+
+Abstract syntax.
+
+\[ \cnt \in \type{C} = \type{V} \mapsto \type{P} \mapsto \type{V} \]
+
+A continuation. Accepts the result of the immediately preceding evaluation and
+the current pervasive state and produces another value, the result of continuing
+the computation.
+
+\[ \scst \in \type{S} = \{ b \in (\type{I} \times \type{V})^* \} \]
+
+The \emph{lexical scope} state which encapsulates the locally scoped context of a
+computation, the state that only depends on lexically enclosing information. The
+lexical state is not passed from a caller into a method being called, for
+instance.
+
+The $b$ component is the bindings visible in the given scope, a mapping from
+variables by identity to values.
+
+\[ \dyst \in \type{D} = \{ e \in \type{I} \mapsto \type{C} \} \]
+
+The \emph{dynamic scope} state encapsulates the dynamic context of a computation.
+Being dynamically scoped means that it may be passed from a caller into a method
+being called but never backwards, from a called method into the caller.
+
+The $e$ component is the behavior of a non-local escape. The first argument is
+the identity of the destination to escape to.
+
+\[ \pest \in \type{P} = \{ i \subset \type{I} \} \]
+
+The \emph{pervasive} state encapsulates unconstrained state. Computational
+side-effects operate on the pervasive state. The pervasive state is passed
+linearly through each step of the computation so the effects of a method call on
+the pervasive state is visible to the caller, unlike the lexically and dynamically
+scoped state.
+
+The pervasive state is immutable, the effect of changing state is obtained by
+producing a new pervasive state with the change applied and using that going
+forward, discarding the old state. The new state is said to be \emph{downstream}
+of the old state. This is how evaluation order is made explicit: given two
+expressions $a_0$ and $a_1$ which are evaluated in pervasive states $\pest_0$
+and $\pest_1$ respectively, $a_1$ is evaluated after $a_0$ exactly if $\pest_1$
+is downstream of $\pest_0$.
+
+The $i$ component is the finite set of identities that have already been used
+during the evaluation.
+
+\[ \eval \in \type{A} \mapsto \type{C} \mapsto \type{S} \mapsto \type{D} \mapsto \type{P} \mapsto \type{V} \]
+
+The evaluation operator which accepts an expression, a continuation, and one of
+each of the three kinds of environment an evaluation can take place within.
+
+\subsection{Utilities}
+
+\begin{eqnarray*}
+\fun{gensym}(\pest_0) & = & (\sym, \pest_1) \\
+\sym & \notin & \pest_0.s \\
+\pest_1 & = & \pest_0 / \{ s = \pest_0.s \cup \{ \sym \} \}
+\end{eqnarray*}
+
+The $\fun{gensym}$ function accepts a pervasive state and yields a fresh symbol
+and a new pervasive state to use from that point on. It is guaranteed that the
+same symbol will never be returned from the new pervasive state or any states
+further downstream.
+
+\subsection{Non-local escapes}
+
+Three forms deal with non-local escaping, that is, aborting a sub-computation
+abruptly and returning control to an arbitrarily distant enclosing computation.
+They are: $\syn{with\_escape}$ which sets up a location that can be escaped to,
+$\syn{escape}$ which initiates an escape to a particular location, and
+$\syn{ensure}$ which registers an expression to always be evaluated however
+the body of the expression completes, normally or by escaping.
+
+\subsubsection{With-escape}
+
+The $\syn{with\_escape}(\sym, a) $ form creates a \emph{non-local escape} object
+that, when called, attempts to return control to the $\syn{with\_escape}$ form
+that created it. The escape object's call method accepts a value which will be
+used as the value of the $\syn{with\_escape}$ expression. If the body completes
+normally the value of the whole expression will be the value of the body expression.
+
+Here's an example of a typical use,
+
+\begin{verbatim}
+def $result := with_escape ($break) {
+  for ($k, $v) in $elements do {
+    if $k == $key
+      then $break($v);
+  }
+  null;
+}
+\end{verbatim}
+
+This code iterates through key/value pairs from the collection \texttt{\$elements}
+and if a pair if found whose key matches \texttt{\$key}, the key we're looking for,
+we immediately return the value as the value of the expression. If no key is
+found we don't need to escape and the computation completes normally with value
+\texttt{null}.
+
+A $\syn{with\_escape}$ can only be successfully escaped once and leaving the
+expression normally is considered as a successful escape.
+
+\begin{eqnarray*}
+\eval(\syn{with\_escape}(\sym, a), \cnt, \scst_0, \dyst_0, \pest_0) & \to & 
+\eval(e, \cnt, \scst_1, \dyst_1, \pest_1)
+\end{eqnarray*}
+
+where,
+
+\begin{eqnarray*}
+(\sym_e, \pest_1) & = & \fun{genuid}(\pest_0) \\
+\dyst_1 & = & \dyst_0 / \{ e = e_e \} \\
+e_e(\sym_t) & = & c \bif \sym_t = \sym_e \\
+e_e(\sym_t) & = & \dyst_0.e(\sym_t) \bif \sym_t \neq \sym_e \\
+\scst_1 & = & \scst_0 / \{ b = b_e \} \\
+b_e & = & (\sym, v_e) :: \scst_0.b \\
+v_e & = & \val{lambda}(\bot, \sym_l, \syn{escape}(\sym_e, \syn{variable}(\sym_l)))
+\end{eqnarray*}
+
+The symbol $\sym_e$ identifies this escape location and is used when escaping
+to decide when we've reached the target. $e_e$ is the escape function to be
+used in the body of the expression. If it is used to escape to this expression
+it aborts by immediately calling the expression's continuation. If it is not
+the target it continues propagating. $v_e$ holds the escape object which is made
+available to the body of the expression through the name $\sym$ in the new
+lexical scope used for the body.
+
+\subsubsection{Ensure}
+
+The $\syn{ensure}(a_b, a_e) $ form evaluates its body expression, $a_b$ in a
+context where however the evaluation completes, normally or through a non-local
+escape, the ensure expression $a_e $ is guaranteed to be executed. If the body
+completes normally the value of the entire expression will be the body's value;
+the ensure block will be evaluated but the value will always be discarded.
+
+\begin{eqnarray*}
+\eval(\syn{ensure}(a_b, a_e), \cnt, \scst_0, \dyst_0, \pest_0) & \to &
+\eval(a_b, c_n, \scst_0, \dyst_1, \pest_0)
+\end{eqnarray*}
+
+where
+
+\begin{eqnarray*}
+\dyst_1 & = & \dyst_0 / \{ e = e_e \} \\
+e_e(\sym_t, v^e_b, \pest^e_1) & = & \eval(a_e, \dyst_0.e(\sym_t), \scst_0, \dyst_0, \pest^e_1) \\
+\cnt_n(v^n_b, \pest^n_1) & = & \eval(a_e, c_d, \scst_0, \dyst_0, \pest^n_1) \\
+\cnt_d(v_e, \pest^n_2) & = & \cnt(v^n_b, \pest^n_2)
+\end{eqnarray*}
+
+There are two ways the body can complete, either normally or by escaping. The
+$e_e$ escape function handles the abrupt case: if the body escapes $e_e$ will
+be called and it will evaluate the ensure block. It passes the enclosing escape
+continuation such that on completion the escape process will continue. The ensure
+block is evaluated in the original dynamic scope such that if it escapes it is
+not evaluated again.
+
+The normal case is handled by $\cnt_e$ which evaluates the ensure block, then
+discards the result (that's the purpose of $\cnt_d$), and finally yields the
+value of the block as the result of the whole expression.
+
+\subsubsection{Escape}
+
+The $\syn{escape}(\sym, a)$ form is synthetic and only produced by the
+$\syn{with\_escape}$ form. The symbol $\sym$ identifies where the expression
+will attempt to escape to and the expression $a$ provides the value to escape
+with.
+
+The escape process takes care to call any ensure blocks between where it is
+called and its destination. Since ensure blocks contain arbitrary code they
+themselves can initiate non-local escapes, in which case the non-local escape
+process that caused the ensure block to be evaluated will be abandoned. Because
+of this an escape can be invoked meaningfully more than once as long as the
+previous calls have all been interrupted in this way before they could succeed.
+
+\begin{eqnarray*}
+\eval(\syn{escape}(\sym, a), \cnt, \scst_0, \dyst_0, \pest_0) & \to &
+\eval(a, \dyst_0.e(\sym), \scst_0, \dyst_0, \pest_0)
+\end{eqnarray*}
+
+Escaping abandons its normal continuation and replaces it in the evaluation of
+the value with the current non-local escape continuation, binding the destination
+to the escape's target.
+
+
+\end{document}

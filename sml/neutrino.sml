@@ -89,15 +89,17 @@ end;
 
 structure Signature = struct
 
+  structure V = Value;
+
   (* A signature (deliberately misspelled because 'signature' is reserved).
      The order of parameters is not significant. *)
   datatype signaturr
-    = Signature of (Value.value * Guard.guard) list
+    = Signature of (V.value * Guard.guard) list
   ;
 
   (* A full invocation. The order of arguments is not significant. *)
   datatype invocation
-    = Invocation of (Value.value * Value.value) list
+    = Invocation of (V.value * V.value) list
   ;
 
   (* Match a single argument against a signature, returning an option that gives
@@ -105,7 +107,7 @@ structure Signature = struct
   fun match_argument sign (tag, value) =
     let
       (* Look for the matching parameter *)
-      fun is_the_param (t, _) = (t = tag);
+      fun is_the_param (t, _) = (V.== t tag);
       val param = (List.find is_the_param sign);
       (* Function that maps a parameter to its score. *)
       fun score_param (_, g) = (tag, Guard.match g value);

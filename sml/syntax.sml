@@ -220,8 +220,8 @@ structure Parser = struct
     | parse_expr (S.List [S.Word "log", value]) =
       V.Log (parse_expr value)
     (* Call thunk *)
-    | parse_expr (S.List [S.Word "call", thunk, value]) =
-      V.CallThunk (parse_expr thunk, parse_expr value)
+    | parse_expr (S.List [S.Word "call", lambda, value]) =
+      V.CallLambda (parse_expr lambda, parse_expr value)
     | parse_expr sexp = raise (ParseError sexp)
 
   (* Parse the given string as a neutrino s-expression, returning a syntax tree. *)
