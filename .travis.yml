@@ -1,3 +1,0 @@
-language: c
-install: apt-cache search ".*sml.*"
-script: make -C sml
