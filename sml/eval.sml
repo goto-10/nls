@@ -83,7 +83,7 @@ structure Eval = struct
   (* A local continuation, the next step during normal evaluation. Continuations
      always continue in the scope they captured when they were created whereas
      the pervasive state is always passed in. *)
-  type continuation = V.value -> pervasive_state -> V.value * pervasive_state;
+  type 'a continuation = V.value -> pervasive_state -> 'a * pervasive_state;
 
   val toplevel_lexical_scope = V.LexicalScope {
     lookup_variable = []
@@ -97,64 +97,97 @@ structure Eval = struct
       V.LexicalScope {lookup_variable=(name, value)::outer}
     end;
 
+  (* A monad controls how evaluation steps proceed. Basically it applies
+     continuations for you. As a rule of thumb, it's okay to partially call
+     a continuation but it should always be the monad that passes the last
+     arguments. *)
+  type 'a monad = {
+    return: V.value -> 'a,
+    bind: 'a continuation -> 'a -> pervasive_state -> ('a * pervasive_state),
+    collapse: 'a -> V.value
+  };
+
+  fun bind {bind=b, collapse=_, return=_} = b
+  fun return {bind=_, collapse=_, return=r} = r
+  fun collapse {bind=_, collapse=c, return=_} = c
+
   (* An escape continuation, the next step in performing a non-local escape.
      The id identifies the destination we're trying to escape to. *)
-  type escape = escape_uid -> continuation;
+  type 'a escape = escape_uid -> 'a continuation;
 
   (* This should probably raise an exception actually, escaping to somewhere
      that doesn't exist. *)
-  fun toplevel_escape target_id value pervasive =
-    (value, pervasive);
+  fun toplevel_escape monad target_id value pervasive =
+    (return monad value, pervasive);
 
   (* Dynamically scoped state, that is, state that propagats from caller to
      callee but not the other way. *)
-  type dynamic_scope_state = {
+  type 'a dynamic_scope_state = {
     (* The currently active non-local continuation. *)
-    escape: escape
+    escape: 'a escape
   };
 
-  val toplevel_dynamic_scope_state : dynamic_scope_state = {
-    escape = toplevel_escape
+  fun toplevel_dynamic_scope_state monad = {
+    escape = toplevel_escape monad
   };
 
   (* Returns a new dynamic scope state with the given escape continuation as the
      active escape. *)
-  fun set_escape ({...} : dynamic_scope_state) value
+  fun set_escape ({...} : 'a dynamic_scope_state) value
     = {escape=value};
 
   exception UnresolvedVariable of V.value;
 
+  (* The identity monad which simply calls continuations. *)
+  fun id x = x
+  val identity_monad : V.value monad = {return = id, bind = id, collapse = id}
+
+  fun counting_return v = (v, 0, 1);
+  fun counting_bind c (v, bs0, rs0) p0 =
+    let
+      val ((r, bs1, rs1), p1) = (c v p0)
+    in
+      ((r, bs0 + bs1 + 1, rs0 + rs1), p1)
+    end
+  fun counting_collapse (v, bs, rs) = v
+
+  val counting_monad : (V.value * int * int) monad = {
+    return = counting_return,
+    bind = counting_bind,
+    collapse = counting_collapse
+  }
+
   (* Executes a single evaluation step. *)
-  fun step expr continue (state as (_, _, p0)) = 
+  fun step monad expr continue (state as (_, _, p0)) =
     case expr
       of V.Literal value 
-      => (continue value p0)
+      => (bind monad continue (return monad value) p0)
        | V.WithEscape (name, body)
-      => step_with_escape name body continue state
+      => step_with_escape monad name body continue state
        | V.FireEscape (target_id, body)
-      => step_fire_escape target_id body state
+      => step_fire_escape monad target_id body state
        | V.Ensure (body, block)
-      => step_ensure body block continue state
+      => step_ensure monad body block continue state
        | V.Variable name
-      => step_variable name continue state
+      => step_variable monad name continue state
        | V.Sequence exprs
-      => step_sequence exprs continue state
+      => step_sequence monad exprs continue state
        | V.LocalBinding (name, value, body)
-      => step_local_binding name value body continue state
+      => step_local_binding monad name value body continue state
        | V.NewObject
-      => step_new_object continue state
+      => step_new_object monad continue state
        | V.NewField
-      => step_new_field continue state
+      => step_new_field monad continue state
        | V.GetField (field, object)
-      => step_get_field field object continue state
+      => step_get_field monad field object continue state
        | V.SetField (field, object, value)
-      => step_set_field field object value continue state
+      => step_set_field monad field object value continue state
        | V.Log value
-      => step_log value continue state
+      => step_log monad value continue state
        | V.CallLambda (lambda, value)
-      => step_call_lambda lambda value continue state
+      => step_call_lambda monad lambda value continue state
 
-  and step_with_escape name body continue (s0, d0, p0) =
+  and step_with_escape monad name body continue (s0, d0, p0) =
     let
       (* Acquire an id for this escape. This'll be used to identify this as the
          destination for the escape lambda. *)
@@ -163,15 +196,15 @@ structure Eval = struct
          expression. *)
       val outer_escape = (#escape d0)
       (* The new topmost escape that will be in effect for the body. *)
-      fun escape target_id value p2 =
+      fun escape target_id =
         if (target_id = escape_id)
           (* If someone escapes non-locally with this escape as the target we
              simply continue on from immediately after this. *)
-          then (continue value p2)
+          then continue
           (* If they're escaping to another target it must be outside this
              escape so we just let it keep going through the next outer
              nonlocal and discard this expression and its continuation. *)
-          else (outer_escape target_id value p2)
+          else outer_escape target_id
       (* Install the new escape. *)
       val d1 = set_escape d0 escape
       (* Create a binding for the symbol. *)
@@ -181,19 +214,19 @@ structure Eval = struct
       val escape_lambda = V.Lambda (scope, [param], lambda_body)
       val s1 = push_binding s0 name escape_lambda
     in
-      step body continue (s1, d1, p1)
+      step monad body continue (s1, d1, p1)
     end
 
-  and step_fire_escape target_id body (state as (_, d0, _)) =
+  and step_fire_escape monad target_id body (state as (_, d0, _)) =
     let
       (* This is the non-local continuation we'll eventually fire. *)
       val escape = (#escape d0)
       val continue_escape = (escape target_id)
     in
-      step body continue_escape state
+      step monad body continue_escape state
     end
 
-  and step_ensure body block continue (s0, d0, p0) =
+  and step_ensure monad body block continue (s0, d0, p0) =
     let
       val outer_escape = (#escape d0)
       (* The ensure-block is evaluated in the same dynamic scope as the one in
@@ -211,7 +244,7 @@ structure Eval = struct
           fun continue_discard_value _ =
             continue value
         in
-          step block continue_discard_value (s0, d0, pa1)
+          step monad block continue_discard_value (s0, d0, pa1)
         end
       (* If the body escapes we evaluate the ensure block with a continuation
          that continues escaping past this escape. As in the normal case the
@@ -221,16 +254,16 @@ structure Eval = struct
         let
           val continue_outer_escape = (outer_escape target_id)
         in
-          step block continue_outer_escape (s0, d0, pb1)
+          step monad block continue_outer_escape (s0, d0, pb1)
         end
       (* The new dynamic scope to use for the body. *)
       val d1 = set_escape d0 escape_ensure
     in
       (* After normal completion of the body we evaluate the ensure block. *)
-      step body continue_ensure (s0, d1, p0)
+      step monad body continue_ensure (s0, d1, p0)
     end
 
-  and step_variable name continue (s0, _, p0) =
+  and step_variable monad name continue (s0, _, p0) =
     let
       val (V.LexicalScope {lookup_variable=bindings, ...}) = s0
       fun get_binding [] = raise (UnresolvedVariable name)
@@ -238,23 +271,24 @@ structure Eval = struct
           if (V.== n name)
             then v
             else get_binding rest
+      val binding = (get_binding bindings)
     in
-      continue (get_binding bindings) p0
+      bind monad continue (return monad binding) p0
     end
 
-  and step_sequence [only] continue state =
+  and step_sequence monad [only] continue state =
       (* A sequence of one expression is equivalent to that one expression. *)
-      (step only continue state)
-    | step_sequence (next::rest) continue (state as (s0, d0, p0)) =
+      (step monad only continue state)
+    | step_sequence monad (next::rest) continue (state as (s0, d0, p0)) =
       (* First evaluate the first expression, discard the value, then evaluate
          the rest. *)
       let
-        fun continue_rest _ p1 = step_sequence rest continue (s0, d0, p1)
+        fun continue_rest _ p1 = step_sequence monad rest continue (s0, d0, p1)
       in
-        step next continue_rest state
+        step monad next continue_rest state
       end
 
-  and step_local_binding name value_expr body continue (state as (s0, d0, p0)) =
+  and step_local_binding monad name value_expr body continue (state as (s0, d0, p0)) =
     let
       (* Continuation that is fired when the value has been evaluated. Binds the
          value to the binding's name and evaluates the body in that scope. *)
@@ -262,43 +296,43 @@ structure Eval = struct
         let
           val s1 = push_binding s0 name value
         in
-          step body continue (s1, d0, p1)
+          step monad body continue (s1, d0, p1)
         end
     in
-      step value_expr continue_with_binding state
+      step monad value_expr continue_with_binding state
     end
 
-  and step_new_object continue (_, _, p0) =
+  and step_new_object monad continue (_, _, p0) =
     let
       (* Generate a new object id. *)
       val (oid, p1) = genuid p0
       (* Initialize the object's state. *)
       val p2 = set_object p1 oid V.empty_object_state
     in
-      continue (V.Object oid) p2
+      bind monad continue (return monad (V.Object oid)) p2
     end
 
-  and step_new_field continue (_, _, p0) =
+  and step_new_field monad continue (_, _, p0) =
     let
       (* Generate a new object (field) id. *)
       val (oid, p1) = genuid p0
     in
-      continue (V.Field oid) p1
+      bind monad continue (return monad (V.Field oid)) p1
     end
 
-  and step_get_field field_expr object_expr continue (state as (s0, d0, p0)) =
+  and step_get_field monad field_expr object_expr continue (state as (s0, d0, p0)) =
     let
       (* After the field key evaluate the object. *)
       fun continue_eval_object field p1 =
         let
           (* After the object access the field's value. *)
           fun continue_get_field object p2 =
-            continue (get_object_field field object p2) p2
+            bind monad continue (return monad (get_object_field field object p2)) p2
         in
-          step object_expr continue_get_field (s0, d0, p1)
+          step monad object_expr continue_get_field (s0, d0, p1)
         end
     in
-      step field_expr continue_eval_object state
+      step monad field_expr continue_eval_object state
     end
 
   (* Utility for getting a field from an object within a given pervasive state.
@@ -322,37 +356,37 @@ structure Eval = struct
       set_object p0 oid new_state
     end
 
-  and step_set_field field_expr object_expr value_expr continue (s0, d0, p0) =
+  and step_set_field monad field_expr object_expr value_expr continue (s0, d0, p0) =
     let
       fun continue_eval_object field p1 =
         let
           fun continue_eval_value object p2 =
             let
               fun continue_set_field value p3 =
-                continue value (set_object_field field object value p3)
+                bind monad continue (return monad value) (set_object_field field object value p3)
             in
-              step value_expr continue_set_field (s0, d0, p2)
+              step monad value_expr continue_set_field (s0, d0, p2)
             end
         in
-          step object_expr continue_eval_value (s0, d0, p1)
+          step monad object_expr continue_eval_value (s0, d0, p1)
         end
     in
-      step field_expr continue_eval_object (s0, d0, p0)
+      step monad field_expr continue_eval_object (s0, d0, p0)
     end
 
-  and step_log value_expr continue (s0, d0, p0) =
+  and step_log monad value_expr continue (s0, d0, p0) =
     let
       fun continue_log value p1 =
         let
           val p2 = append_log p1 value
         in
-          continue value p2
+          bind monad continue (return monad value) p2
         end
     in
-      step value_expr continue_log (s0, d0, p0)
+      step monad value_expr continue_log (s0, d0, p0)
     end
 
-  and step_call_lambda lambda_expr value_expr continue (s0, d0, p0) =
+  and step_call_lambda monad lambda_expr value_expr continue (s0, d0, p0) =
     let
       fun continue_eval_value (V.Lambda (sl0, [param], lambda_body)) p1 =
         let
@@ -360,22 +394,28 @@ structure Eval = struct
             let
               val sl1 = push_binding sl0 param value
             in
-              step lambda_body continue (sl1, d0, p2)
+              step monad lambda_body continue (sl1, d0, p2)
             end
         in
-          step value_expr continue_call_lambda (s0, d0, p1)
+          step monad value_expr continue_call_lambda (s0, d0, p1)
         end
     in
-      step lambda_expr continue_eval_value (s0, d0, p0)
+      step monad lambda_expr continue_eval_value (s0, d0, p0)
     end
 
-  fun yield_value value pervasive = (value, pervasive);
+  fun yield_value monad value pervasive = (return monad value, pervasive);
 
-  val initial_state = (toplevel_lexical_scope,
-    toplevel_dynamic_scope_state, initial_pervasive_state)
+  fun initial_state monad = (toplevel_lexical_scope,
+    toplevel_dynamic_scope_state monad, initial_pervasive_state)
 
   (* Evaluates the given parsed expression, returning a pair of the result value
      and the pervasive state in which the value should be interpreted. *)
-  fun eval expr = step expr yield_value initial_state;
+  fun eval expr =
+    let
+      val monad = counting_monad
+      val (result, pervasive) = step monad expr (yield_value monad) (initial_state monad)
+    in
+      (collapse monad result, pervasive)
+    end
 
 end;
