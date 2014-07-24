@@ -156,13 +156,13 @@ structure Eval = struct
 
   and step_with_escape name body continue (s0, d0, p0) =
     let
-      (* Acquire an ie for this escape. This'll be used to identify this as the
+      (* Acquire an id for this escape. This'll be used to identify this as the
          destination for the escape lambda. *)
       val (escape_id, p1) = genuid p0
-      (* Grab the non_local that was in effect immediately before this
+      (* Grab the escape that was in effect immediately before this
          expression. *)
       val outer_escape = (#escape d0)
-      (* The new topmost non-local handler that will be in effect for the body. *)
+      (* The new topmost escape that will be in effect for the body. *)
       fun escape target_id value p2 =
         if (target_id = escape_id)
           (* If someone escapes non-locally with this escape as the target we
@@ -172,13 +172,13 @@ structure Eval = struct
              escape so we just let it keep going through the next outer
              nonlocal and discard this expression and its continuation. *)
           else (outer_escape target_id value p2)
-      (* Install the new non-local. *)
+      (* Install the new escape. *)
       val d1 = set_escape d0 escape
       (* Create a binding for the symbol. *)
       val param = V.String "value"
       val scope = toplevel_lexical_scope
-      val body = V.FireEscape (escape_id, V.Variable param)
-      val escape_lambda = V.Lambda (scope, [param], body)
+      val lambda_body = V.FireEscape (escape_id, V.Variable param)
+      val escape_lambda = V.Lambda (scope, [param], lambda_body)
       val s1 = push_binding s0 name escape_lambda
     in
       step body continue (s1, d1, p1)

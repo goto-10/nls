@@ -262,6 +262,8 @@ structure UnitTests = struct
       check_eval (Int 3) [] "3";
       check_eval (Int 4) [] "(begin 2 3 4)";
       check_eval (Int 8) [] "(def $a := 8 in $a)";
+      check_eval (Int 9) [] "(def $a := 9 in (def $b := 10 in $a))";
+      check_eval (Int 12) [] "(def $a := 11 in (def $b := 12 in $b))";
       check_eval (Obj (Uid 0)) [] "(new)";
       check_eval (Obj (Uid 1)) [] "(begin (new) (new))";
       check_eval (Obj (Uid 0)) [] "(def $x := (new) in $x)";
