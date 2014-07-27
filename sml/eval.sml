@@ -80,10 +80,20 @@ structure Eval = struct
       {log=l1, objects=(#objects p), uid_stream=(#uid_stream p)}
     end;
 
+  datatype FailureCause
+    = UnhandledEscape
+    | UnresolvedVariable of V.value
+  ;
+
+  datatype 'a Result
+    = Success of 'a
+    | Abort of FailureCause
+  ;
+
   (* A local continuation, the next step during normal evaluation. Continuations
      always continue in the scope they captured when they were created whereas
      the pervasive state is always passed in. *)
-  type 'a continuation = V.value -> pervasive_state -> 'a * pervasive_state;
+  type 'a continuation = V.value -> pervasive_state -> 'a Result * pervasive_state;
 
   val toplevel_lexical_scope = V.LexicalScope {
     lookup_variable = []
@@ -103,7 +113,7 @@ structure Eval = struct
      arguments. *)
   type 'a monad = {
     return: V.value -> 'a,
-    bind: 'a continuation -> 'a -> pervasive_state -> ('a * pervasive_state),
+    bind: 'a continuation -> 'a -> pervasive_state -> 'a Result * pervasive_state,
     collapse: 'a -> V.value
   };
 
@@ -115,10 +125,8 @@ structure Eval = struct
      The id identifies the destination we're trying to escape to. *)
   type 'a escape = escape_uid -> 'a continuation;
 
-  (* This should probably raise an exception actually, escaping to somewhere
-     that doesn't exist. *)
   fun toplevel_escape monad target_id value pervasive =
-    (return monad value, pervasive);
+    (Abort UnhandledEscape, pervasive);
 
   (* Dynamically scoped state, that is, state that propagats from caller to
      callee but not the other way. *)
@@ -136,8 +144,6 @@ structure Eval = struct
   fun set_escape ({...} : 'a dynamic_scope_state) value
     = {escape=value};
 
-  exception UnresolvedVariable of V.value;
-
   (* The identity monad which simply calls continuations. *)
   fun id x = x
   val identity_monad : V.value monad = {return = id, bind = id, collapse = id}
@@ -145,9 +151,11 @@ structure Eval = struct
   fun counting_return v = (v, 0, 1);
   fun counting_bind c (v, bs0, rs0) p0 =
     let
-      val ((r, bs1, rs1), p1) = (c v p0)
+      val (result, p1) = (c v p0)
     in
-      ((r, bs0 + bs1 + 1, rs0 + rs1), p1)
+      (case result
+        of Success (r, bs1, rs1) => (Success (r, bs0 + bs1 + 1, rs0 + rs1), p1)
+         | Abort c => (result, p1))
     end
   fun counting_collapse (v, bs, rs) = v
 
@@ -266,14 +274,13 @@ structure Eval = struct
   and step_variable monad name continue (s0, _, p0) =
     let
       val (V.LexicalScope {lookup_variable=bindings, ...}) = s0
-      fun get_binding [] = raise (UnresolvedVariable name)
+      fun get_binding [] = (Abort (UnresolvedVariable name), p0)
         | get_binding ((n, v)::rest) =
           if (V.== n name)
-            then v
+            then (bind monad continue (return monad v) p0)
             else get_binding rest
-      val binding = (get_binding bindings)
     in
-      bind monad continue (return monad binding) p0
+      (get_binding bindings)
     end
 
   and step_sequence monad [only] continue state =
@@ -403,7 +410,7 @@ structure Eval = struct
       step monad lambda_expr continue_eval_value (s0, d0, p0)
     end
 
-  fun yield_value monad value pervasive = (return monad value, pervasive);
+  fun yield_value monad value pervasive = (Success (return monad value), pervasive);
 
   fun initial_state monad = (toplevel_lexical_scope,
     toplevel_dynamic_scope_state monad, initial_pervasive_state)
@@ -415,7 +422,9 @@ structure Eval = struct
       val monad = counting_monad
       val (result, pervasive) = step monad expr (yield_value monad) (initial_state monad)
     in
-      (collapse monad result, pervasive)
+      case result
+        of Success value => (Success (collapse monad value), pervasive)
+         | Abort c => (Abort c, pervasive)
     end
 
 end;

@@ -249,10 +249,19 @@ structure UnitTests = struct
     let
       fun check_eval expected_result expected_log input =
         let
-          val (result, p0) = (E.eval (P.parse input))
+          val (E.Success result, p0) = (E.eval (P.parse input))
           val log = (#log p0)
         in
           assert_equals expected_result result;
+          assert_equals expected_log log;
+          ()
+        end
+      fun check_fail expected_cause expected_log input =
+        let
+          val (E.Abort cause, p0) = (E.eval (P.parse input))
+          val log = (#log p0)
+        in
+          assert_equals expected_cause cause;
           assert_equals expected_log log;
           ()
         end
@@ -272,6 +281,8 @@ structure UnitTests = struct
       check_eval (Int 5) [] "(with_escape $e do (call $e 5))";
       check_eval (Int 6) [] "(with_escape $e do (log (call $e 6)))";
       check_eval (Int 7) [Int 1] "(with_escape $e do (begin (log 1) (call $e 7) (log 2)))))";
+      check_fail (E.UnresolvedVariable (Str "b")) [] "(def $a := 8 in $b)";
+      check_fail (E.UnresolvedVariable (Str "c")) [Int 1] "(def $a := 8 in (begin (log 1) $c (log 2)))";
       ()
     end;
 
