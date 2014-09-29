@@ -1,0 +1,3 @@
+language: haskell
+script: cd hs && runhaskell Test
+install: cabal install hunit
