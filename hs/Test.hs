@@ -1,26 +1,31 @@
-import Ast
-import Sexp
+import qualified Value as V
+import qualified Sexp as S
 import Test.HUnit
-import Eval
+import qualified Eval as E
 
-aLi = Ast.Literal
+aLi = V.Literal
 aIn v = aLi (vIn v)
-aVa = Ast.Variable
-aSq = Ast.Sequence
-sId = Sexp.Ident
-sIn = Sexp.Int
-sLi = Sexp.List
-sWd = Sexp.Word
-tDm = Sexp.DelimToken
-tId = Sexp.IdentToken
-tIn = Sexp.IntToken
-tOp = Sexp.OpToken
+aVa = V.Variable
+aSq = V.Sequence
+sId = S.Ident
+sIn = S.Int
+sLi = S.List
+sWd = S.Word
+tDm = S.DelimToken
+tId = S.IdentToken
+tIn = S.IntToken
+tOp = S.OpToken
 tPn = tId 0
-tWd = Sexp.WordToken
-vIn = Ast.IntValue
-vSt = Ast.StrValue
-vNl = Ast.NullValue
-vBn = Ast.BoolValue
+tWd = S.WordToken
+vIn = V.Int
+vSt = V.Str
+vNl = V.Null
+vBn = V.Bool
+fIn = E.FlatInt
+fSt = E.FlatStr
+fNl = E.FlatNull
+fBn = E.FlatBool
+fIe = E.FlatInstance
 
 testUidStream = TestLabel "uidStream" (TestList
   [ check (i0 == i0)
@@ -35,10 +40,10 @@ testUidStream = TestLabel "uidStream" (TestList
   ])
   where
     check v = TestCase (assertBool "" v)
-    s0 = Eval.uidStreamStart
-    (i0, s1) = Eval.nextUidFromStream s0
-    (i1, s2) = Eval.nextUidFromStream s1
-    (i2, s3) = Eval.nextUidFromStream s2
+    s0 = E.uidStreamStart
+    (i0, s1) = E.nextUidFromStream s0
+    (i1, s2) = E.nextUidFromStream s1
+    (i2, s3) = E.nextUidFromStream s2
 
 testTokenize = TestLabel "tokenize" (TestList
   [ check [tPn "foo"] "$foo"
@@ -56,7 +61,7 @@ testTokenize = TestLabel "tokenize" (TestList
   where
     check expected input = TestLabel input testCase
       where
-        (found, rest) = Sexp.tokenize input
+        (found, rest) = S.tokenize input
         testCase = TestCase (assertEqual "" expected found)
 
 testSexpParsing = TestLabel "sexpParsing" (TestList
@@ -72,7 +77,7 @@ testSexpParsing = TestLabel "sexpParsing" (TestList
   where
     check expected input = TestLabel input testCase
       where
-        found = Sexp.parse input
+        found = S.parseSexp input
         testCase = TestCase (assertEqual "" expected found)
 
 testAstParsing = TestLabel "astParsing" (TestList
@@ -88,45 +93,46 @@ testAstParsing = TestLabel "astParsing" (TestList
   where
     check expected input = TestLabel input testCase
       where
-        found = Ast.parse input
+        found = V.parseAst input
         testCase = TestCase (assertEqual "" expected found)
 
 testEval = TestLabel "eval" (TestList
-  [ check vNl [] "(begin)"
-  , check vNl [] "null"
-  , check (vBn True) [] "true"
-  , check (vBn False) [] "false"
-  , check (vIn 0) [] "0"
-  , check (vIn 1) [] "1"
-  , check (vIn 100) [] "100"
-  , check (vIn 5) [] "(begin 5)"
-  , check (vIn 7) [] "(begin 6 7)"
-  , check (vIn 10) [] "(begin 8 9 10)"
-  , check (vIn 8) [] "(def $a := 8 in $a)"
-  , check (vIn 9) [] "(def $a := 9 in (def $b := 10 in $a))"
-  , check (vIn 12) [] "(def $a := 11 in (def $b := 12 in $b))"
-  , check (vIn 13) [] "(def $a := 13 in (def $b := $a in $b))"
-  , checkFail (Eval.UnboundVariable (vSt "foo")) [] "$foo"
-  , checkFail (Eval.UnboundVariable (vSt "b")) [] "(def $a := 9 in $b)"
-  , checkFail (Eval.UnboundVariable (vSt "a")) [] "(def $a := $a in $b)"
+  [ check fNl [] "(begin)"
+  , check fNl [] "null"
+  , check (fBn True) [] "true"
+  , check (fBn False) [] "false"
+  , check (fIn 0) [] "0"
+  , check (fIn 1) [] "1"
+  , check (fIn 100) [] "100"
+  , check (fIn 5) [] "(begin 5)"
+  , check (fIn 7) [] "(begin 6 7)"
+  , check (fIn 10) [] "(begin 8 9 10)"
+  , check (fIn 8) [] "(def $a := 8 in $a)"
+  , check (fIn 9) [] "(def $a := 9 in (def $b := 10 in $a))"
+  , check (fIn 12) [] "(def $a := 11 in (def $b := 12 in $b))"
+  , check (fIn 13) [] "(def $a := 13 in (def $b := $a in $b))"
+  , check (fIe (V.Uid 0) V.emptyVaporInstanceState) [] "(new)"
+  , checkFail (E.UnboundVariable (vSt "foo")) [] "$foo"
+  , checkFail (E.UnboundVariable (vSt "b")) [] "(def $a := 9 in $b)"
+  , checkFail (E.UnboundVariable (vSt "a")) [] "(def $a := $a in $b)"
   ])
   where
     -- Check that evaluation succeeds.
     check expected log input = TestLabel input testCase
       where
-        ast = Ast.parse input
-        result = Eval.eval ast
+        ast = V.parseAst input
+        result = E.evalFlat ast
         testCase = TestCase (case result of
-          Normal found _ -> assertEqual "" expected found
-          Failure cause -> assertFailure ("Unexpected failure, " ++ show cause))
+          E.Normal found -> assertEqual "" expected found
+          E.Failure cause -> assertFailure ("Unexpected failure, " ++ show cause))
     -- Check that evaluation fails
     checkFail expected log input = TestLabel input testCase
       where
-        ast = Ast.parse input
-        result = Eval.eval ast
+        ast = V.parseAst input
+        result = E.evalFlat ast
         testCase = TestCase (case result of
-          Normal found _ -> assertFailure ("Expected failure, found " ++ show found)
-          Failure cause -> assertEqual "" expected cause)
+          E.Normal found -> assertFailure ("Expected failure, found " ++ show found)
+          E.Failure cause -> assertEqual "" expected cause)
 
 testAll = runTestTT (TestList
   [ testTokenize

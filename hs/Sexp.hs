@@ -1,6 +1,6 @@
 module Sexp
 ( tokenize
-, parse
+, parseSexp
 , Token (IdentToken, OpToken, DelimToken, WordToken, IntToken)
 , Sexp (Ident, List, Int, Error, Word, Delim)
 ) where
@@ -87,7 +87,7 @@ data Sexp
   deriving (Show, Eq)
 
 -- Parse a string as an s-expression.
-parse str =
+parseSexp str =
   case tokenize str
     of (tokens, []) -> fst (parseTokens tokens)
        (_, rest) -> Error (TokenizeFailed rest)

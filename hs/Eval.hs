@@ -1,18 +1,15 @@
 module Eval
 ( eval
+, evalFlat
 , uidStreamStart
 , nextUidFromStream
 , Result (Normal, Failure)
 , FailureCause (UnboundVariable)
+, FlatValue (FlatNull, FlatBool, FlatInt, FlatStr, FlatInstance)
 ) where
 
-import qualified Ast
+import qualified Value as V
 import qualified Data.Map as Map
-
--- A unique object id.
-data Uid
-  = Uid Int
-  deriving (Show, Eq)
 
 -- A stream of ids. 
 data UidStream = UidStream Int
@@ -20,7 +17,7 @@ data UidStream = UidStream Int
 
 -- Returns the next uid from the given stream along with a new stream which is
 -- guaranteed to never return the uid just returned.
-nextUidFromStream (UidStream n) = (Uid n, UidStream (n + 1))
+nextUidFromStream (UidStream n) = (V.Uid n, UidStream (n + 1))
 
 -- Returns a new fresh uid stream.
 uidStreamStart = UidStream 0
@@ -31,7 +28,7 @@ uidStreamStart = UidStream 0
 -- state.
 data PervasiveState = PervasiveState {
   uids :: UidStream,
-  objects :: Map.Map Uid Int
+  objects :: Map.Map V.Uid V.ObjectState
 } deriving (Show)
 
 -- A completely empty pervasive state with no objects or state at all.
@@ -52,28 +49,28 @@ genUid state = (uid, newState)
 -- The possible reasons for evaluation to fail.
 data FailureCause
   = AbsentNonLocal
-  | AstNotUnderstood Ast.Ast
-  | UnboundVariable Ast.Value
+  | AstNotUnderstood V.Ast
+  | UnboundVariable V.Value
   deriving (Show, Eq)
 
 -- The result of an evaluation.
-data Result
-  = Normal Ast.Value PervasiveState
+data Result a
+  = Normal a
   | Failure FailureCause
   deriving (Show)
 
 -- A local continuation, the next step during normal evaluation. Continuations
 -- always continue in the scope they captured when they were created whereas the
 -- pervasive state is always passed in.
-type Continuation = Ast.Value -> PervasiveState -> Result
+type Continuation = V.Value -> PervasiveState -> Result (V.Value, PervasiveState)
 
-endContinuation = Normal
+endContinuation v p = Normal (v, p)
 
 -- Dynamically scoped state, that is, state that propagats from caller to
 -- callee but not the other way.
 data DynamicState = DynamicState {
   -- The top nonlocal continuation.
-  nonlocal :: Uid -> Continuation
+  nonlocal :: V.Uid -> Continuation
 }
 
 absentNonlocal _ _ _ = (Failure AbsentNonLocal)
@@ -86,7 +83,7 @@ emptyDynamicState = DynamicState {
 -- Lexically scoped state, that is, state that doesn't propagate from caller to
 -- callee nor the other way (unless there is capturing).
 data LexicalState = LexicalState {
-  scope :: Map.Map Ast.Value Ast.Value
+  scope :: Map.Map V.Value V.Value
 }
 
 -- Initial empty lexical state.
@@ -110,10 +107,11 @@ emptyCompleteState = CompleteState {
 
 evalExpr expr continue s0 =
   case expr of
-    Ast.Literal v -> continue v (pervasive s0)
-    Ast.Variable stage name -> evalVariable name continue s0
-    Ast.LocalBinding name value body -> evalLocalBinding name value body continue s0
-    Ast.Sequence exprs -> evalSequence exprs continue s0
+    V.Literal v -> continue v (pervasive s0)
+    V.Variable stage name -> evalVariable name continue s0
+    V.LocalBinding name value body -> evalLocalBinding name value body continue s0
+    V.Sequence exprs -> evalSequence exprs continue s0
+    V.NewInstance -> evalNewInstance continue s0
     _ -> Failure (AstNotUnderstood expr)
 
 evalVariable name continue s0 =
@@ -132,12 +130,49 @@ evalLocalBinding name valueExpr bodyExpr continue s0 = evalExpr valueExpr thenBi
         l1 = l0 {scope = innerScope}
         s1 = s0 {lexical = l1, pervasive = p1}
 
-evalSequence [] continue s0 = continue Ast.NullValue (pervasive s0)
+evalSequence [] continue s0 = continue V.Null (pervasive s0)
 evalSequence [last] continue s0 = evalExpr last continue s0
 evalSequence (next:rest) continue s0 = evalExpr next thenRest s0
   where
-    thenRest _ p1 = evalSequence rest continue (s0 {pervasive = p1})
+    thenRest _ p1 = evalSequence rest continue s1
+      where
+        s1 = s0 {pervasive = p1}
+
+-- Creates a new empty instance.
+evalNewInstance continue s0 = continue (V.Obj uid) p2
+  where
+    (uid, p1) = genUid (pervasive s0)
+    state = V.emptyVaporInstanceState
+    oldObjects = objects p1
+    newObjects = Map.insert uid (V.Instance state) oldObjects
+    p2 = p1 { objects = newObjects }
+
+-- Flattened runtime values, that is, values where the part that for Values
+-- belong in the pervasive state have been extracted and embedded directly in
+-- the flat value.
+data FlatValue
+  = FlatNull
+  | FlatBool Bool
+  | FlatInt Int
+  | FlatStr String
+  | FlatInstance V.Uid V.InstanceState
+  deriving (Show, Eq)
+
+flatten V.Null p = FlatNull
+flatten (V.Bool v) p = FlatBool v
+flatten (V.Int v) p = FlatInt v
+flatten (V.Str v) p = FlatStr v
+flatten (V.Obj id) p = case state of
+  V.Instance inst -> FlatInstance id inst
+  where
+    objs = objects p
+    state = objs Map.! id
 
 -- Evaluates the given expression, yielding an evaluation result
-eval :: Ast.Ast -> Result
+eval :: V.Ast -> Result (V.Value, PervasiveState)
 eval expr = evalExpr expr endContinuation emptyCompleteState
+
+evalFlat :: V.Ast -> Result FlatValue
+evalFlat expr = case eval expr of
+  Normal (v, p) -> Normal (flatten v p)
+  Failure c -> Failure c
