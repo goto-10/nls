@@ -9,7 +9,7 @@ import Text.Regex
 
 -- S-expression tokens.
 data Token
-  = IdentToken (Int, [Char])
+  = IdentToken Int [Char]
   | OpToken [Char]
   | IntToken Int
   | WordToken [Char]
@@ -29,7 +29,7 @@ allTokens =
   , ("[ \t\r\f\n]", ignoreToken)
   ]
   where
-    makeIdent [stage, name] = [IdentToken (countStages stage, name)]
+    makeIdent [stage, name] = [IdentToken (countStages stage) name]
       where
         countStages "$" = 0
         countStages ('$':rest) = 1 + (countStages rest)
@@ -73,7 +73,7 @@ tokenize str = accumulateTokens str []
 
 -- A parsed s-expression.
 data Sexp
-  = IdentSexp (Int, [Char])
+  = IdentSexp Int [Char]
   | WordSexp [Char]
   | IntSexp Int
   | ListSexp [Sexp]
@@ -87,7 +87,7 @@ parse str =
     of (tokens, []) -> fst (parseTokens tokens)
        (_, rest) -> TokenizeError rest
   where
-    parseTokens ((IdentToken str):r0) = (IdentSexp str, r0)
+    parseTokens ((IdentToken stage name):r0) = (IdentSexp stage name, r0)
     parseTokens ((WordToken word):r0) = (WordSexp word, r0)
     parseTokens ((IntToken value):r0) = (IntSexp value, r0)
     parseTokens ((DelimToken "("):r0) = parseList r0 []
