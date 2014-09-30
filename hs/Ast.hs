@@ -20,7 +20,7 @@ data Value
   | BoolValue Bool
   | IntValue Int
   | StrValue [Char]
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 -- Parse an s-expression string into a syntax tree.
 parse str = adapt (Sexp.parse str)

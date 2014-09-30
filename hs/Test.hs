@@ -92,19 +92,35 @@ testAstParsing = TestLabel "astParsing" (TestList
         testCase = TestCase (assertEqual "" expected found)
 
 testEval = TestLabel "eval" (TestList
-  [ check vNl "(begin)"
-  , check vNl "null"
-  , check (vBn True) "true"
-  , check (vBn False) "false"
+  [ check vNl [] "(begin)"
+  , check vNl [] "null"
+  , check (vBn True) [] "true"
+  , check (vBn False) [] "false"
+  , check (vIn 0) [] "0"
+  , check (vIn 1) [] "1"
+  , check (vIn 100) [] "100"
+  , check (vIn 5) [] "(begin 5)"
+  , check (vIn 7) [] "(begin 6 7)"
+  , check (vIn 10) [] "(begin 8 9 10)"
+  , checkFail (Eval.UnboundVariable (vSt "foo")) [] "$foo"
   ])
   where
-    check expected input = TestLabel input testCase
+    -- Check that evaluation succeeds.
+    check expected log input = TestLabel input testCase
       where
         ast = Ast.parse input
         result = Eval.eval ast
         testCase = TestCase (case result of
           Normal found _ -> assertEqual "" expected found
           Failure cause -> assertFailure (show cause))
+    -- Check that evaluation fails
+    checkFail expected log input = TestLabel input testCase
+      where
+        ast = Ast.parse input
+        result = Eval.eval ast
+        testCase = TestCase (case result of
+          Normal found _ -> assertFailure (show found)
+          Failure cause -> assertEqual "" expected cause)
 
 testAll = runTestTT (TestList
   [ testTokenize

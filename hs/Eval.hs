@@ -3,6 +3,7 @@ module Eval
 , uidStreamStart
 , nextUidFromStream
 , Result (Normal, Failure)
+, FailureCause (UnboundVariable)
 ) where
 
 import qualified Ast
@@ -52,7 +53,8 @@ genUid state = (uid, newState)
 data FailureCause
   = AbsentNonLocal
   | AstNotUnderstood Ast.Ast
-  deriving (Show)
+  | UnboundVariable Ast.Value
+  deriving (Show, Eq)
 
 -- The result of an evaluation.
 data Result
@@ -91,14 +93,39 @@ emptyLexicalState = LexicalState {
   scope = Map.empty
 }
 
--- Initial empty version of the complete evaluation state.
-emptyCompleteState = (emptyLexicalState, emptyDynamicState, emptyPervasiveState)
+-- The complete context state at a particular point in the evaluation.
+data CompleteState = CompleteState {
+  lexical :: LexicalState,
+  dynamic :: DynamicState,
+  pervasive :: PervasiveState
+}
 
-evalStep expr continue s0@(_, _, p0) =
+-- Initial empty version of the complete evaluation state.
+emptyCompleteState = CompleteState {
+  lexical = emptyLexicalState,
+  dynamic = emptyDynamicState,
+  pervasive = emptyPervasiveState
+}
+
+evalExpr expr continue s0 =
   case expr of
-    Ast.Literal v -> continue v p0
+    Ast.Literal v -> continue v (pervasive s0)
+    Ast.Variable stage name -> evalVariable name continue s0
+    Ast.Sequence exprs -> evalSequence exprs continue s0
     _ -> Failure (AstNotUnderstood expr)
+
+evalVariable name continue s0 =
+  if Map.member name vars
+    then continue (vars Map.! name) (pervasive s0)
+    else Failure (UnboundVariable name)
+  where vars = scope (lexical s0)
+
+evalSequence [] continue s0 = continue Ast.NullValue (pervasive s0)
+evalSequence [last] continue s0 = evalExpr last continue s0
+evalSequence (next:rest) continue s0 = evalExpr next thenRest s0
+  where
+    thenRest _ p1 = evalSequence rest continue (s0 {pervasive = p1})
 
 -- Evaluates the given expression, yielding an evaluation result
 eval :: Ast.Ast -> Result
-eval expr = evalStep expr endContinuation emptyCompleteState
+eval expr = evalExpr expr endContinuation emptyCompleteState
