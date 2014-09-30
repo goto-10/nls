@@ -1,17 +1,18 @@
 module Ast
 ( parse
-, Ast (Literal, Variable, Sequence)
+, Ast (Literal, Variable, Sequence, LocalBinding)
 , Value (IntValue, StrValue, NullValue, BoolValue)
 ) where
 
-import qualified Sexp
+import qualified Sexp as S
 
 -- Syntax trees.
 data Ast
   = Variable Int Value
+  | LocalBinding Value Ast Ast
   | Literal Value
   | Sequence [Ast]
-  | AstError Sexp.Sexp
+  | AstError S.Sexp
   deriving (Show, Eq)
 
 -- Runtime values.
@@ -19,18 +20,20 @@ data Value
   = NullValue
   | BoolValue Bool
   | IntValue Int
-  | StrValue [Char]
+  | StrValue String
   deriving (Show, Eq, Ord)
 
 -- Parse an s-expression string into a syntax tree.
-parse str = adapt (Sexp.parse str)
+parse str = adapt (S.parse str)
   where
-    adapt (Sexp.IdentSexp stage name) = Variable stage (StrValue name)
-    adapt (Sexp.WordSexp "null") = Literal NullValue
-    adapt (Sexp.WordSexp "true") = Literal (BoolValue True)
-    adapt (Sexp.WordSexp "false") = Literal (BoolValue False)
-    adapt (Sexp.IntSexp v) = Literal (IntValue v)
-    adapt (Sexp.ListSexp ((Sexp.WordSexp "begin"):rest)) = adaptSequence rest
+    adapt (S.Ident stage name) = Variable stage (StrValue name)
+    adapt (S.List [S.Word "def", S.Ident 0 name, S.Delim ":=", value, S.Word "in", body])
+      = LocalBinding (StrValue name) (adapt value) (adapt body)
+    adapt (S.Word "null") = Literal NullValue
+    adapt (S.Word "true") = Literal (BoolValue True)
+    adapt (S.Word "false") = Literal (BoolValue False)
+    adapt (S.Int v) = Literal (IntValue v)
+    adapt (S.List ((S.Word "begin"):rest)) = adaptSequence rest
     adapt e = AstError e
     adaptSequence [] = Literal NullValue
     adaptSequence [e] = adapt e

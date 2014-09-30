@@ -7,10 +7,10 @@ aLi = Ast.Literal
 aIn v = aLi (vIn v)
 aVa = Ast.Variable
 aSq = Ast.Sequence
-sId = Sexp.IdentSexp
-sIn = Sexp.IntSexp
-sLi = Sexp.ListSexp
-sWd = Sexp.WordSexp
+sId = Sexp.Ident
+sIn = Sexp.Int
+sLi = Sexp.List
+sWd = Sexp.Word
 tDm = Sexp.DelimToken
 tId = Sexp.IdentToken
 tIn = Sexp.IntToken
@@ -102,7 +102,13 @@ testEval = TestLabel "eval" (TestList
   , check (vIn 5) [] "(begin 5)"
   , check (vIn 7) [] "(begin 6 7)"
   , check (vIn 10) [] "(begin 8 9 10)"
+  , check (vIn 8) [] "(def $a := 8 in $a)"
+  , check (vIn 9) [] "(def $a := 9 in (def $b := 10 in $a))"
+  , check (vIn 12) [] "(def $a := 11 in (def $b := 12 in $b))"
+  , check (vIn 13) [] "(def $a := 13 in (def $b := $a in $b))"
   , checkFail (Eval.UnboundVariable (vSt "foo")) [] "$foo"
+  , checkFail (Eval.UnboundVariable (vSt "b")) [] "(def $a := 9 in $b)"
+  , checkFail (Eval.UnboundVariable (vSt "a")) [] "(def $a := $a in $b)"
   ])
   where
     -- Check that evaluation succeeds.
@@ -112,14 +118,14 @@ testEval = TestLabel "eval" (TestList
         result = Eval.eval ast
         testCase = TestCase (case result of
           Normal found _ -> assertEqual "" expected found
-          Failure cause -> assertFailure (show cause))
+          Failure cause -> assertFailure ("Unexpected failure, " ++ show cause))
     -- Check that evaluation fails
     checkFail expected log input = TestLabel input testCase
       where
         ast = Ast.parse input
         result = Eval.eval ast
         testCase = TestCase (case result of
-          Normal found _ -> assertFailure (show found)
+          Normal found _ -> assertFailure ("Expected failure, found " ++ show found)
           Failure cause -> assertEqual "" expected cause)
 
 testAll = runTestTT (TestList

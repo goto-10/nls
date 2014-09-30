@@ -60,6 +60,7 @@ data FailureCause
 data Result
   = Normal Ast.Value PervasiveState
   | Failure FailureCause
+  deriving (Show)
 
 -- A local continuation, the next step during normal evaluation. Continuations
 -- always continue in the scope they captured when they were created whereas the
@@ -111,6 +112,7 @@ evalExpr expr continue s0 =
   case expr of
     Ast.Literal v -> continue v (pervasive s0)
     Ast.Variable stage name -> evalVariable name continue s0
+    Ast.LocalBinding name value body -> evalLocalBinding name value body continue s0
     Ast.Sequence exprs -> evalSequence exprs continue s0
     _ -> Failure (AstNotUnderstood expr)
 
@@ -119,6 +121,16 @@ evalVariable name continue s0 =
     then continue (vars Map.! name) (pervasive s0)
     else Failure (UnboundVariable name)
   where vars = scope (lexical s0)
+
+evalLocalBinding name valueExpr bodyExpr continue s0 = evalExpr valueExpr thenBind s0
+  where
+    thenBind value p1 = evalExpr bodyExpr continue s1
+      where
+        l0 = lexical s0
+        outerScope = scope l0
+        innerScope = Map.insert name value outerScope
+        l1 = l0 {scope = innerScope}
+        s1 = s0 {lexical = l1, pervasive = p1}
 
 evalSequence [] continue s0 = continue Ast.NullValue (pervasive s0)
 evalSequence [last] continue s0 = evalExpr last continue s0

@@ -2,19 +2,19 @@ module Sexp
 ( tokenize
 , parse
 , Token (IdentToken, OpToken, DelimToken, WordToken, IntToken)
-, Sexp (IdentSexp, ListSexp, IntSexp, ParseError, TokenizeError, WordSexp)
+, Sexp (Ident, List, Int, Error, Word, Delim)
 ) where
 
 import Text.Regex
 
 -- S-expression tokens.
 data Token
-  = IdentToken Int [Char]
-  | OpToken [Char]
+  = IdentToken Int String
+  | OpToken String
   | IntToken Int
-  | WordToken [Char]
-  | DelimToken [Char]
-  | ErrorToken [Char]
+  | WordToken String
+  | DelimToken String
+  | ErrorToken String
   deriving (Show, Eq)
 
 -- A list of the regular expressions that describe each token along with the
@@ -71,29 +71,34 @@ tokenize str = accumulateTokens str []
         of Nothing -> (tokens, rest)
            Just (token, tail) -> accumulateTokens tail (tokens ++ token)
 
+data ErrorCause
+  = ParseFailed [Token]
+  | TokenizeFailed String
+  deriving (Show, Eq)
+
 -- A parsed s-expression.
 data Sexp
-  = IdentSexp Int [Char]
-  | WordSexp [Char]
-  | IntSexp Int
-  | ListSexp [Sexp]
-  | ParseError [Token]
-  | TokenizeError [Char]
+  = Ident Int String
+  | Word String
+  | Delim String
+  | Int Int
+  | List [Sexp]
+  | Error ErrorCause
   deriving (Show, Eq)
 
 -- Parse a string as an s-expression.
 parse str =
   case tokenize str
     of (tokens, []) -> fst (parseTokens tokens)
-       (_, rest) -> TokenizeError rest
+       (_, rest) -> Error (TokenizeFailed rest)
   where
-    parseTokens ((IdentToken stage name):r0) = (IdentSexp stage name, r0)
-    parseTokens ((WordToken word):r0) = (WordSexp word, r0)
-    parseTokens ((IntToken value):r0) = (IntSexp value, r0)
+    parseTokens ((IdentToken stage name):r0) = (Ident stage name, r0)
+    parseTokens ((WordToken word):r0) = (Word word, r0)
+    parseTokens ((IntToken value):r0) = (Int value, r0)
     parseTokens ((DelimToken "("):r0) = parseList r0 []
-    parseTokens e = (ParseError e, [])
-    parseList ((DelimToken ")"):r0) accum = (ListSexp (reverse accum), r0)
-    parseList r0 accum = parseList r1 (elm:accum)
-      where
-        (elm, r1) = parseTokens r0
-
+    parseTokens ((DelimToken s):r0) = (Delim s, r0)
+    parseTokens r0 = (Error (ParseFailed r0), [])
+    parseList ((DelimToken ")"):r0) accum = (List (reverse accum), r0)
+    parseList r0 accum = case parseTokens r0 of
+      (e@(Error _), r1) -> (e, r1)
+      (elm, rest) -> parseList rest (elm:accum)
