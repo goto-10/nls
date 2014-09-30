@@ -91,12 +91,27 @@ testAstParsing = TestLabel "astParsing" (TestList
         found = Ast.parse input
         testCase = TestCase (assertEqual "" expected found)
 
+testEval = TestLabel "eval" (TestList
+  [ check vNl "(begin)"
+  , check vNl "null"
+  , check (vBn True) "true"
+  , check (vBn False) "false"
+  ])
+  where
+    check expected input = TestLabel input testCase
+      where
+        ast = Ast.parse input
+        result = Eval.eval ast
+        testCase = TestCase (case result of
+          Normal found _ -> assertEqual "" expected found
+          Failure cause -> assertFailure (show cause))
+
 testAll = runTestTT (TestList
   [ testTokenize
   , testSexpParsing
   , testAstParsing
   , testUidStream
+  , testEval
   ])
 
 main = testAll
-

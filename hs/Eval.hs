@@ -2,6 +2,7 @@ module Eval
 ( eval
 , uidStreamStart
 , nextUidFromStream
+, Result (Normal, Failure)
 ) where
 
 import qualified Ast
@@ -23,8 +24,10 @@ nextUidFromStream (UidStream n) = (Uid n, UidStream (n + 1))
 -- Returns a new fresh uid stream.
 uidStreamStart = UidStream 0
 
--- The state that pervades the entire execution. A change here will be visible
--- across the whole process.
+-- The pervasive, non-scoped, state. This flows linearly through the evaluation
+-- independent of scope and control flow -- for instance, leaving a scope can
+-- restore a previous scope state but nothing can restore a previous pervasive
+-- state.
 data PervasiveState = PervasiveState {
   uids :: UidStream,
   objects :: Map.Map Uid Int
@@ -32,7 +35,9 @@ data PervasiveState = PervasiveState {
 
 -- A completely empty pervasive state with no objects or state at all.
 emptyPervasiveState = PervasiveState {
+  -- The uid stream used for generating identity.
   uids = uidStreamStart,
+  -- Object state.
   objects = Map.empty
 }
 
@@ -43,4 +48,57 @@ genUid state = (uid, newState)
     (uid, newUids) = nextUidFromStream (uids state)
     newState = state { uids = newUids }
 
-eval expr = Ast.NullValue
+-- The possible reasons for evaluation to fail.
+data FailureCause
+  = AbsentNonLocal
+  | AstNotUnderstood Ast.Ast
+  deriving (Show)
+
+-- The result of an evaluation.
+data Result
+  = Normal Ast.Value PervasiveState
+  | Failure FailureCause
+
+-- A local continuation, the next step during normal evaluation. Continuations
+-- always continue in the scope they captured when they were created whereas the
+-- pervasive state is always passed in.
+type Continuation = Ast.Value -> PervasiveState -> Result
+
+endContinuation = Normal
+
+-- Dynamically scoped state, that is, state that propagats from caller to
+-- callee but not the other way.
+data DynamicState = DynamicState {
+  -- The top nonlocal continuation.
+  nonlocal :: Uid -> Continuation
+}
+
+absentNonlocal _ _ _ = (Failure AbsentNonLocal)
+
+-- Initial empty dynamic state.
+emptyDynamicState = DynamicState {
+  nonlocal = absentNonlocal
+}
+
+-- Lexically scoped state, that is, state that doesn't propagate from caller to
+-- callee nor the other way (unless there is capturing).
+data LexicalState = LexicalState {
+  scope :: Map.Map Ast.Value Ast.Value
+}
+
+-- Initial empty lexical state.
+emptyLexicalState = LexicalState {
+  scope = Map.empty
+}
+
+-- Initial empty version of the complete evaluation state.
+emptyCompleteState = (emptyLexicalState, emptyDynamicState, emptyPervasiveState)
+
+evalStep expr continue s0@(_, _, p0) =
+  case expr of
+    Ast.Literal v -> continue v p0
+    _ -> Failure (AstNotUnderstood expr)
+
+-- Evaluates the given expression, yielding an evaluation result
+eval :: Ast.Ast -> Result
+eval expr = evalStep expr endContinuation emptyCompleteState
