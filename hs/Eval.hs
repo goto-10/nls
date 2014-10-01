@@ -4,7 +4,7 @@ module Eval
 , uidStreamStart
 , nextUidFromStream
 , Result (Normal, Failure)
-, FailureCause (UnboundVariable)
+, FailureCause (UnboundVariable, AbsentNonLocal)
 , FlatValue (FlatNull, FlatBool, FlatInt, FlatStr, FlatInstance, FlatHook)
 ) where
 
@@ -56,7 +56,7 @@ data FailureCause
   = AbsentNonLocal
   | AstNotUnderstood V.Ast
   | UnboundVariable V.Value
-  | UnknownCall V.Value [V.Value]
+  | UnknownCall V.Value String [V.Value]
   deriving (Show, Eq)
 
 -- The result of an evaluation.
@@ -117,13 +117,24 @@ emptyCompleteState = CompleteState {
 
 evalExpr expr continue s0 =
   case expr of
-    V.Literal v -> continue v (pervasive s0)
-    V.Variable stage name -> evalVariable name continue s0
-    V.LocalBinding name value body -> evalLocalBinding name value body continue s0
-    V.Sequence exprs -> evalSequence exprs continue s0
-    V.NewInstance -> evalNewInstance continue s0
-    V.Call subj args -> evalCall subj args continue s0
-    _ -> Failure (AstNotUnderstood expr) (pervasive s0)
+    V.Literal v
+      -> continue v (pervasive s0)
+    V.Variable stage name
+      -> evalVariable name continue s0
+    V.LocalBinding name value body
+      -> evalLocalBinding name value body continue s0
+    V.Sequence exprs 
+      -> evalSequence exprs continue s0
+    V.NewInstance 
+      -> evalNewInstance continue s0
+    V.CallNative subj name args
+      -> evalCallNative subj name args continue s0
+    V.WithEscape name body
+      -> evalWithEscape name body continue s0
+    V.Ensure body ensure
+      -> evalEnsure body ensure continue s0
+    _
+      -> Failure (AstNotUnderstood expr) (pervasive s0)
 
 evalVariable name continue s0 =
   if Map.member name vars
@@ -170,27 +181,129 @@ evalList exprs continue s0 = evalListAccum exprs s0 []
           where
             s1 = s0 {pervasive=p1}
 
+evalWithEscape name bodyExpr continue s0 = evalExpr bodyExpr continue s1
+  where
+    -- Generate a unique id for this escape.
+    p0 = pervasive s0
+    (escapeUid, p1) = genUid p0
+    -- Hook the escape into the chain of nonlocals.
+    d0 = dynamic s0
+    nonlocal0 = nonlocal d0
+    nonlocal1 targetUid
+        | targetUid == escapeUid = continue
+        | otherwise = nonlocal0 targetUid
+    -- Give the escape hook a name in the body's scope.
+    l0 = lexical s0
+    scope0 = scope l0
+    scope1 = Map.insert name (V.Hook (V.EscapeHook escapeUid)) scope0
+    l1 = l0 {scope = scope1}
+    d1 = d0 {nonlocal = nonlocal1}
+    s1 = s0 {lexical = l1, dynamic = d1, pervasive = p1}
+
+callEscapeHookNative (V.Hook (V.EscapeHook uid)) "!" [val] continue s0 = bail val p0
+  where
+    d0 = dynamic s0
+    nonlocal0 = nonlocal d0
+    bail = nonlocal0 uid
+    p0 = pervasive s0
+
+{-
+  and step_ensure monad body block continue (s0, d0, p0) =
+    let
+      val outer_escape = (#escape d0)
+      (* The ensure-block is evaluated in the same dynamic scope as the one in
+         which it was defined such that if it escapes itself it won't end in an
+         infinite loop.
+
+         After evaluating the ensure block we discard its result and continue
+         evaluation with the value of the block such that the result value of
+         the whole thing is unaffected by the ensure block.
+
+         The pervasive state is called pa1 to reflect the fact that there are
+         two paths through this code, the non-escape (a) and escape (b) path. *)
+      fun continue_ensure value pa1 =
+        let
+          fun continue_discard_value _ =
+            continue value
+        in
+          step monad block continue_discard_value (s0, d0, pa1)
+        end
+      (* If the body escapes we evaluate the ensure block with a continuation
+         that continues escaping past this escape. As in the normal case the
+         evaluation of the block happens in the same dynamic scope as the one
+         in which it is defined, again to avoid looking if it escapes itself. *)
+      fun escape_ensure target_id value pb1 =
+        let
+          val continue_outer_escape = (outer_escape target_id)
+        in
+          step monad block continue_outer_escape (s0, d0, pb1)
+        end
+      (* The new dynamic scope to use for the body. *)
+      val d1 = set_escape d0 escape_ensure
+    in
+      (* After normal completion of the body we evaluate the ensure block. *)
+      step monad body continue_ensure (s0, d1, p0)
+    end
+-}
+evalEnsure bodyExpr ensureExpr continue s0 = evalExpr bodyExpr thenEvalEnsure s1
+  where
+    -- The ensure-block is evaluated in the same dynamic scope as the one in
+    -- which it was defined such that if it escapes itself it won't end in an
+    -- infinite loop.
+    --
+    -- After evaluating the ensure block we discard its result and continue
+    -- evaluation with the value of the block such that the result value of
+    -- the whole thing is unaffected by the ensure block.
+    --
+    -- The pervasive state is called pa1 to reflect the fact that there are
+    -- two paths through this code, the non-escape (a) and escape (b) path.
+    thenEvalEnsure bodyValue pa1 = evalExpr ensureExpr thenDiscardValue sa1
+      where
+        sa1 = s0 {pervasive = pa1}
+        thenDiscardValue ensureValue = continue bodyValue
+    d0 = dynamic s0
+    nonlocal0 = nonlocal d0
+    -- If the body escapes we evaluate the ensure block with a continuation
+    -- that continues escaping past this escape. As in the normal case the
+    -- evaluation of the block happens in the same dynamic scope as the one
+    -- in which it is defined, again to avoid looping if it escapes itself.
+    nonlocal1 targetUid escapeValue pb1 = evalExpr ensureExpr thenContinueEscape sb1
+      where
+        sb1 = s0 {pervasive = pb1}
+        thenContinueEscape ensureValue = nonlocal0 targetUid escapeValue
+    d1 = d0 {nonlocal=nonlocal1}
+    s1 = s0 {dynamic=d1}
+
 -- Evaluates a function call expression.
-evalCall recvExpr argsExprs continue s0 = evalExpr recvExpr thenArgs s0
+evalCallNative recvExpr name argsExprs continue s0 = evalExpr recvExpr thenArgs s0
   where
     thenArgs recv p1 = evalList argsExprs thenCall s1
       where
         s1 = s0 {pervasive=p1}
-        thenCall args p2 = callValue recv args continue s2
+        thenCall args p2 = dispatchNative recv name args continue s2
           where
-            s2 = s1 {pervasive=p2}
+            s2 = s0 {pervasive=p2}
 
--- Hooks
-callValue (V.Hook V.LogHook) [value] continue s0 = callLogHook value continue s0
-callValue recv args _ s0 = Failure (UnknownCall recv args) (pervasive s0)
+-- Natives
+dispatchNative subj = case subj of
+  V.Hook V.LogHook -> callLogHookNative subj
+  V.Int _ -> callIntNative subj
+  V.Hook (V.EscapeHook _) -> callEscapeHookNative subj
+  _ -> failNative subj
 
--- (! $log <expr>)
-callLogHook value continue s0 = continue value p1
+callLogHookNative _ "!" [value] continue s0 = continue value p1
   where
     p0 = pervasive s0
     log0 = valueLog p0
     log1 = log0 ++ [value]
     p1 = p0 {valueLog = log1}
+callLogHookNative recv op args continue s0 = failNative recv op args continue s0
+
+callIntNative (V.Int a) "+" [V.Int b] continue s0 = continue (V.Int (a + b)) (pervasive s0)
+callIntNative (V.Int a) "-" [V.Int b] continue s0 = continue (V.Int (a - b)) (pervasive s0)
+callIntNative recv op args continue s0 = failNative recv op args continue s0
+
+failNative recv op args _ s0 = Failure (UnknownCall recv op args) (pervasive s0)
 
 -- Flattened runtime values, that is, values where the part that for Values
 -- belong in the pervasive state have been extracted and embedded directly in

@@ -22,11 +22,11 @@ data Token
 allTokens =
   [ ("(\\$+|@+)([a-z_]+)", makeIdent)
   , ("\\.([a-z_]+)", makeNamedOp)
-  , ("([+<>=:!]+)", makeOperator)
+  , ("([-+<>=:!]+)", makeOperator)
   , ("([a-z_]+)", makeWord)
   , ("([0-9]+)", makeInt)
-  , ("([(){}])", makeDelimiter)
-  , ("[ \t\r\f\n]", ignoreToken)
+  , ("([(){};])", makeDelimiter)
+  , ("[ \\t\\r\\f\\n]", ignoreToken)
   ]
   where
     makeIdent [stage, name] = [IdentToken (countStages stage) name]

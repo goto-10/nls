@@ -1,8 +1,8 @@
 module Value
 ( parseAst
-, Ast (Literal, Variable, Sequence, LocalBinding, NewInstance, Call)
+, Ast (Literal, Variable, Sequence, LocalBinding, NewInstance, CallNative, WithEscape, Ensure)
 , Value (Int, Str, Null, Bool, Obj, Hook)
-, Hook (LogHook)
+, Hook (LogHook, EscapeHook)
 , Phase (Vapor, Fluid, Frozen)
 , Uid (Uid)
 , ObjectState (Instance)
@@ -20,7 +20,9 @@ data Ast
   | Literal Value
   | Sequence [Ast]
   | NewInstance
-  | Call Ast [Ast]
+  | CallNative Ast String [Ast]
+  | WithEscape Value Ast
+  | Ensure Ast Ast
   | AstError S.Sexp
   deriving (Show, Eq)
 
@@ -31,6 +33,7 @@ data Uid
 
 data Hook
   = LogHook
+  | EscapeHook Uid
   deriving (Show, Eq, Ord)
 
 -- Runtime values. A general value can't be interpreted independently since part
@@ -77,10 +80,17 @@ parseAst str = adapt (S.parseSexp str)
     adapt (S.Ident stage name) = Variable stage (Str name)
     adapt (S.List [S.Word "def", S.Ident 0 name, S.Delim ":=", value, S.Word "in", body])
       = LocalBinding (Str name) (adapt value) (adapt body)
-    adapt (S.List ((S.Word "begin"):rest)) = adaptSequence rest
+    adapt (S.List ((S.Delim ";"):rest)) = adaptSequence rest
     -- Objects
     adapt (S.List [S.Word "new"]) = NewInstance
-    adapt (S.List (S.Op "!":subj:args)) = Call (adapt subj) (map adapt args)
+    -- Natives
+    adapt (S.List (S.Op "!":(S.Op op):subj:args)) = CallNative (adapt subj) op (map adapt args)
+    adapt (S.List (S.Op "!":subj:args)) = CallNative (adapt subj) "!" (map adapt args)
+    -- Escaping
+    adapt (S.List [S.Word "with_escape", S.Ident _ name, S.Word "do", body]) =
+      WithEscape (Str name) (adapt body)
+    adapt (S.List [S.Word "after", body, S.Word "ensure", ensure]) =
+      Ensure (adapt body) (adapt ensure)
     adapt e = AstError e
     adaptSequence [] = Literal Null
     adaptSequence [e] = adapt e
