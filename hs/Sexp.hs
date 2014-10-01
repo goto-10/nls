@@ -2,7 +2,7 @@ module Sexp
 ( tokenize
 , parseSexp
 , Token (IdentToken, OpToken, DelimToken, WordToken, IntToken)
-, Sexp (Ident, List, Int, Error, Word, Delim)
+, Sexp (Ident, List, Int, Error, Word, Delim, Op)
 ) where
 
 import Text.Regex
@@ -22,7 +22,7 @@ data Token
 allTokens =
   [ ("(\\$+|@+)([a-z_]+)", makeIdent)
   , ("\\.([a-z_]+)", makeNamedOp)
-  , ("([+<>=:]+)", makeOperator)
+  , ("([+<>=:!]+)", makeOperator)
   , ("([a-z_]+)", makeWord)
   , ("([0-9]+)", makeInt)
   , ("([(){}])", makeDelimiter)
@@ -81,6 +81,7 @@ data Sexp
   = Ident Int String
   | Word String
   | Delim String
+  | Op String
   | Int Int
   | List [Sexp]
   | Error ErrorCause
@@ -95,6 +96,7 @@ parseSexp str =
     parseTokens ((IdentToken stage name):r0) = (Ident stage name, r0)
     parseTokens ((WordToken word):r0) = (Word word, r0)
     parseTokens ((IntToken value):r0) = (Int value, r0)
+    parseTokens ((OpToken op):r0) = (Op op, r0)
     parseTokens ((DelimToken "("):r0) = parseList r0 []
     parseTokens ((DelimToken s):r0) = (Delim s, r0)
     parseTokens r0 = (Error (ParseFailed r0), [])

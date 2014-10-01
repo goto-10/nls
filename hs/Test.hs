@@ -26,6 +26,7 @@ fSt = E.FlatStr
 fNl = E.FlatNull
 fBn = E.FlatBool
 fIe = E.FlatInstance
+fHk = E.FlatHook
 
 testUidStream = TestLabel "uidStream" (TestList
   [ check (i0 == i0)
@@ -49,6 +50,7 @@ testTokenize = TestLabel "tokenize" (TestList
   [ check [tPn "foo"] "$foo"
   , check [tOp "foo"] " .foo "
   , check [tOp "<+>"] " <+> "
+  , check [tOp "!"] " ! "
   , check [tDm ":="] " := "
   , check [tWd "foo"] " foo "
   , check [tIn 3] " 3 "
@@ -97,6 +99,7 @@ testAstParsing = TestLabel "astParsing" (TestList
         testCase = TestCase (assertEqual "" expected found)
 
 testEval = TestLabel "eval" (TestList
+  -- Primitive ops
   [ check fNl [] "(begin)"
   , check fNl [] "null"
   , check (fBn True) [] "true"
@@ -107,32 +110,48 @@ testEval = TestLabel "eval" (TestList
   , check (fIn 5) [] "(begin 5)"
   , check (fIn 7) [] "(begin 6 7)"
   , check (fIn 10) [] "(begin 8 9 10)"
+  -- Bindings
   , check (fIn 8) [] "(def $a := 8 in $a)"
   , check (fIn 9) [] "(def $a := 9 in (def $b := 10 in $a))"
   , check (fIn 12) [] "(def $a := 11 in (def $b := 12 in $b))"
   , check (fIn 13) [] "(def $a := 13 in (def $b := $a in $b))"
+  -- Hooks
+  , check (fHk V.LogHook) [] "$log"
+  , check (fBn True) [fBn True] "(! $log true)"
+  , check (fIn 4) [fIn 2, fIn 3, fIn 4] "(begin (! $log 2) (! $log 3) (! $log 4))"
+  -- Objects
   , check (fIe (V.Uid 0) V.emptyVaporInstanceState) [] "(new)"
+  -- Failures
   , checkFail (E.UnboundVariable (vSt "foo")) [] "$foo"
   , checkFail (E.UnboundVariable (vSt "b")) [] "(def $a := 9 in $b)"
   , checkFail (E.UnboundVariable (vSt "a")) [] "(def $a := $a in $b)"
+  , checkFail (E.UnboundVariable (vSt "x")) [vIn 8] "(begin (! $log 8) $x (! $log 9))"
   ])
   where
     -- Check that evaluation succeeds.
-    check expected log input = TestLabel input testCase
+    check expected expLog input = TestLabel input testCase
       where
         ast = V.parseAst input
         result = E.evalFlat ast
-        testCase = TestCase (case result of
-          E.Normal found -> assertEqual "" expected found
-          E.Failure cause -> assertFailure ("Unexpected failure, " ++ show cause))
+        testCase = case result of
+          E.Normal (found, log) -> checkResult found log
+          E.Failure cause _ -> TestCase (assertFailure ("Unexpected failure, " ++ show cause))
+        checkResult found foundLog = (TestList
+          [ TestCase (assertEqual "" expected found)
+          , TestCase (assertEqual "" expLog foundLog)
+          ])
     -- Check that evaluation fails
-    checkFail expected log input = TestLabel input testCase
+    checkFail expected expLog input = TestLabel input testCase
       where
         ast = V.parseAst input
         result = E.evalFlat ast
-        testCase = TestCase (case result of
-          E.Normal found -> assertFailure ("Expected failure, found " ++ show found)
-          E.Failure cause -> assertEqual "" expected cause)
+        testCase = case result of
+          E.Normal (found, log) -> TestCase (assertFailure ("Expected failure, found " ++ show found))
+          E.Failure cause foundLog -> checkFailure cause foundLog
+        checkFailure cause foundLog = (TestList
+          [ TestCase (assertEqual "" expected cause)
+          , TestCase (assertEqual "" expLog foundLog)
+          ])
 
 testAll = runTestTT (TestList
   [ testTokenize
