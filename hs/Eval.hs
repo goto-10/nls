@@ -207,44 +207,6 @@ callEscapeHookNative (V.Hook (V.EscapeHook uid)) "!" [val] continue s0 = bail va
     bail = nonlocal0 uid
     p0 = pervasive s0
 
-{-
-  and step_ensure monad body block continue (s0, d0, p0) =
-    let
-      val outer_escape = (#escape d0)
-      (* The ensure-block is evaluated in the same dynamic scope as the one in
-         which it was defined such that if it escapes itself it won't end in an
-         infinite loop.
-
-         After evaluating the ensure block we discard its result and continue
-         evaluation with the value of the block such that the result value of
-         the whole thing is unaffected by the ensure block.
-
-         The pervasive state is called pa1 to reflect the fact that there are
-         two paths through this code, the non-escape (a) and escape (b) path. *)
-      fun continue_ensure value pa1 =
-        let
-          fun continue_discard_value _ =
-            continue value
-        in
-          step monad block continue_discard_value (s0, d0, pa1)
-        end
-      (* If the body escapes we evaluate the ensure block with a continuation
-         that continues escaping past this escape. As in the normal case the
-         evaluation of the block happens in the same dynamic scope as the one
-         in which it is defined, again to avoid looking if it escapes itself. *)
-      fun escape_ensure target_id value pb1 =
-        let
-          val continue_outer_escape = (outer_escape target_id)
-        in
-          step monad block continue_outer_escape (s0, d0, pb1)
-        end
-      (* The new dynamic scope to use for the body. *)
-      val d1 = set_escape d0 escape_ensure
-    in
-      (* After normal completion of the body we evaluate the ensure block. *)
-      step monad body continue_ensure (s0, d1, p0)
-    end
--}
 evalEnsure bodyExpr ensureExpr continue s0 = evalExpr bodyExpr thenEvalEnsure s1
   where
     -- The ensure-block is evaluated in the same dynamic scope as the one in
