@@ -1,7 +1,8 @@
+import Test.HUnit
 import qualified Value as V
 import qualified Sexp as S
-import Test.HUnit
 import qualified Eval as E
+import qualified Method as M
 
 aLi = V.Literal
 aIn v = aLi (vIn v)
@@ -103,7 +104,7 @@ testAstParsing = TestLabel "astParsing" (TestList
 -- newline char which confuses the regexps for some reason.
 multiline = foldr (++) ""
 
-testEval = TestLabel "eval" (TestList
+testEvalExpr = TestLabel "evalExpr" (TestList
   -- Primitive ops
   [ check fNl [] "(;)"
   , check fNl [] "null"
@@ -228,12 +229,22 @@ testEval = TestLabel "eval" (TestList
           , TestCase (assertEqual "" expLog foundLog)
           ])
 
+testMatchOrder = TestLabel "matchOrder" (TestList
+  [ check (M.EqMatch < M.IsMatch 0)
+  , check (M.IsMatch 0 < M.IsMatch 1)
+  , check (M.IsMatch 100 < M.IsMatch 101)
+  , check (M.IsMatch 65536 < M.AnyMatch)
+  ])
+  where
+    check v = TestCase (assertBool "" v)
+
 testAll = runTestTT (TestList
   [ testTokenize
   , testSexpParsing
   , testAstParsing
   , testUidStream
-  , testEval
+  , testEvalExpr
+  , testMatchOrder
   ])
 
 main = testAll

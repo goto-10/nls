@@ -10,6 +10,7 @@ module Eval
 
 import qualified Value as V
 import qualified Data.Map as Map
+import qualified Method as M
 
 -- A stream of ids. 
 data UidStream = UidStream Int

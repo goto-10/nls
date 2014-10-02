@@ -69,8 +69,7 @@ data ObjectState
   = Instance InstanceState
   deriving (Show, Eq)
 
--- Parse an s-expression string into a syntax tree.
-parseAst str = adapt (S.parseSexp str)
+adaptExpr = adapt
   where
     -- Primitive ops
     adapt (S.Word "null") = Literal Null
@@ -95,3 +94,6 @@ parseAst str = adapt (S.parseSexp str)
     adaptSequence [] = Literal Null
     adaptSequence [e] = adapt e
     adaptSequence elms = Sequence (map adapt elms)
+
+-- Parse an s-expression string into a syntax tree.
+parseAst str = adaptExpr (S.parseSexp str)
