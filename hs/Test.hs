@@ -231,10 +231,10 @@ testEvalExpr = TestLabel "evalExpr" (TestList
           ])
 
 testMatchOrder = TestLabel "matchOrder" (TestList
-  [ check (M.EqMatch < M.IsMatch 0)
-  , check (M.IsMatch 0 < M.IsMatch 1)
-  , check (M.IsMatch 100 < M.IsMatch 101)
-  , check (M.IsMatch 65536 < M.AnyMatch)
+  [ check (M.ScoreEq < M.ScoreIs 0)
+  , check (M.ScoreIs 0 < M.ScoreIs 1)
+  , check (M.ScoreIs 100 < M.ScoreIs 101)
+  , check (M.ScoreIs 65536 < M.ScoreAny)
   ])
   where
     check v = TestCase (assertBool "" v)
@@ -260,31 +260,63 @@ instance M.TypeHierarchy TestHierarchy where
   superTypes _ (V.Uid n) = map V.Uid (Map.findWithDefault [] n testInheritance)
 
 testSingleGuards = TestLabel "singleGuards" (TestList
-  [ check M.AnyMatch M.Any (V.Str "foo")
-  , check M.AnyMatch M.Any (V.Int 0)
-  , check M.AnyMatch M.Any V.Null
-  , check M.AnyMatch M.Any (V.Bool True)
-  , check M.NoMatch (M.Eq V.Null) (V.Str "foo")
-  , check M.NoMatch (M.Eq V.Null) (V.Int 0)
-  , check M.EqMatch (M.Eq V.Null) V.Null
-  , check (M.IsMatch 0) (M.Is (V.Uid 2)) (V.Int 2)
-  , check (M.IsMatch 1) (M.Is (V.Uid 1)) (V.Int 2)
-  , check (M.IsMatch 2) (M.Is (V.Uid 0)) (V.Int 2)
-  , check M.NoMatch (M.Is (V.Uid 2)) (V.Int 1)
-  , check (M.IsMatch 0) (M.Is (V.Uid 1)) (V.Int 1)
-  , check (M.IsMatch 1) (M.Is (V.Uid 0)) (V.Int 1)
-  , check M.NoMatch (M.Is (V.Uid 2)) (V.Int 0)
-  , check M.NoMatch (M.Is (V.Uid 1)) (V.Int 0)
-  , check (M.IsMatch 0) (M.Is (V.Uid 0)) (V.Int 0)
-  , check (M.IsMatch 3) (M.Is (V.Uid 0)) (V.Int 14)
-  , check (M.IsMatch 3) (M.Is (V.Uid 0)) (V.Int 13)
-  , check (M.IsMatch 2) (M.Is (V.Uid 0)) (V.Int 12)
-  , check M.NoMatch (M.Is (V.Uid 0)) (V.Int 15)
+  [ check M.ScoreAny M.Any (V.Str "foo")
+  , check M.ScoreAny M.Any (V.Int 0)
+  , check M.ScoreAny M.Any V.Null
+  , check M.ScoreAny M.Any (V.Bool True)
+  , check M.ScoreNone (M.Eq V.Null) (V.Str "foo")
+  , check M.ScoreNone (M.Eq V.Null) (V.Int 0)
+  , check M.ScoreEq (M.Eq V.Null) V.Null
+  , check (M.ScoreIs 0) (M.Is (V.Uid 2)) (V.Int 2)
+  , check (M.ScoreIs 1) (M.Is (V.Uid 1)) (V.Int 2)
+  , check (M.ScoreIs 2) (M.Is (V.Uid 0)) (V.Int 2)
+  , check M.ScoreNone (M.Is (V.Uid 2)) (V.Int 1)
+  , check (M.ScoreIs 0) (M.Is (V.Uid 1)) (V.Int 1)
+  , check (M.ScoreIs 1) (M.Is (V.Uid 0)) (V.Int 1)
+  , check M.ScoreNone (M.Is (V.Uid 2)) (V.Int 0)
+  , check M.ScoreNone (M.Is (V.Uid 1)) (V.Int 0)
+  , check (M.ScoreIs 0) (M.Is (V.Uid 0)) (V.Int 0)
+  , check (M.ScoreIs 3) (M.Is (V.Uid 0)) (V.Int 14)
+  , check (M.ScoreIs 3) (M.Is (V.Uid 0)) (V.Int 13)
+  , check (M.ScoreIs 2) (M.Is (V.Uid 0)) (V.Int 12)
+  , check M.ScoreNone (M.Is (V.Uid 0)) (V.Int 15)
   ])
   where
     check expected guard value = TestCase (assertEqual "" expected result)
       where
         result = M.matchGuard TestHierarchy guard value
+
+maybeMap f (Just v) = Just (f v)
+maybeMap _ Nothing = Nothing
+
+sAn = M.ScoreAny
+sEq = M.ScoreEq
+
+testSignatureMatching = TestLabel "signatureMatching" (TestList
+  [ check Nothing [([1], M.Any), ([2], M.Any)] [(1, 3)]
+  , check Nothing [([1], M.Any), ([2], M.Any)] [(2, 3)]
+  , check Nothing [([1], M.Any), ([2], M.Any)] [(3, 3)]
+  , check (Just [(1, sAn)]) [([1], M.Any)] [(1, 3)]
+  , check (Just [(1, sAn)]) [([1], M.Any)] [(1, 3), (2, 4)]
+  , check (Just [(1, sAn)]) [([1], M.Any)] [(2, 5), (1, 6)]
+  , check (Just [(1, sEq)]) [([1], M.Eq (V.Int 3))] [(1, 3)]
+  , check Nothing [([1], M.Eq (V.Int 4))] [(1, 3)]
+  , check (Just [(1, sAn), (2, sAn), (3, sAn)])
+      [([1], M.Any), ([2], M.Any), ([3], M.Any)]
+      [(1, 7), (2, 7), (3, 7)]
+  , check (Just [(1, sAn), (3, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(1, 10), (3, 11)]
+  , check (Just [(2, sAn), (3, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(2, 12), (3, 13)]
+  , check (Just [(1, sAn), (4, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(1, 14), (4, 15)]
+  , check (Just [(2, sAn), (4, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(2, 16), (4, 17)]
+  ])
+  where
+    check expList sigList invList = TestCase (assertEqual "" expected result)
+      where
+        signature = [M.Parameter (map V.Int tags) guard | (tags, guard) <- sigList]
+        invocation = Map.fromList [(V.Int key, V.Int value) | (key, value) <- invList]
+        result = M.matchSignature TestHierarchy signature invocation
+        expected = maybeMap wrapExpected expList
+        wrapExpected scores = [(V.Int tag, score) | (tag, score) <- scores]
 
 testAll = runTestTT (TestList
   [ testTokenize
@@ -294,6 +326,7 @@ testAll = runTestTT (TestList
   , testEvalExpr
   , testMatchOrder
   , testSingleGuards
+  , testSignatureMatching
   ])
 
 main = testAll
