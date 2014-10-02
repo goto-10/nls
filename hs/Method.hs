@@ -1,23 +1,20 @@
 module Method
 ( MatchResult (AnyMatch, EqMatch, NoMatch, IsMatch)
+, TypeHierarchy (typeOf, superTypes)
+, Guard (Eq, Is, Any)
+, matchGuard
 ) where
 
 import qualified Value as V
 
+-- Parameter guard
 data Guard
   = Eq V.Value
   | Is V.Uid
   | Any
   deriving (Show, Eq)
 
-data Parameter
-  = Parameter Guard [V.Value]
-  deriving (Show, Eq)
-
-data SigSeg = SigSeg [Parameter]
-
-data Signature = Signature [SigSeg]
-
+-- The result of matching a guard against a concrete value.
 data MatchResult
   = EqMatch
   | IsMatch Int
@@ -25,22 +22,24 @@ data MatchResult
   | NoMatch
   deriving (Show, Eq, Ord)
 
-data Hierarchy = Hierarchy {
-  getType :: V.Value -> V.Uid,
-  getTypeParents :: V.Uid -> [V.Uid]
-}
+-- Provides information about where values fit within the type hierarchy.
+class TypeHierarchy a where
+  typeOf :: a -> V.Value -> V.Uid
+  superTypes :: a -> V.Uid -> [V.Uid]
 
-matchGuard Any _ _ = AnyMatch
-matchGuard (Eq expected) value _
+-- Match a guard against a value in a particular type hierarchy.
+matchGuard :: TypeHierarchy a => a -> Guard -> V.Value -> MatchResult
+matchGuard _ Any _ = AnyMatch
+matchGuard _ (Eq expected) value
     | (expected == value) = EqMatch
     | otherwise = NoMatch
-matchGuard (Is uid) value hierarchy = matchIsGuard uid hierarchy 0 valueType
+matchGuard hierarchy (Is uid) value = matchIsGuard hierarchy uid 0 valueType
   where
-    valueType = (getType hierarchy) value
+    valueType = typeOf hierarchy value
 
-matchIsGuard expected hierarchy depth found
+matchIsGuard hierarchy expected depth found
     | (expected == found) = IsMatch depth
     | otherwise = foldl min NoMatch submatches
       where
-        parents = (getTypeParents hierarchy) found
-        submatches = map (matchIsGuard expected hierarchy (depth + 1)) parents
+        parents = superTypes hierarchy found
+        submatches = map (matchIsGuard hierarchy expected (depth + 1)) parents

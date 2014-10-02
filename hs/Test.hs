@@ -1,4 +1,5 @@
 import Test.HUnit
+import qualified Data.Map as Map
 import qualified Value as V
 import qualified Sexp as S
 import qualified Eval as E
@@ -238,6 +239,53 @@ testMatchOrder = TestLabel "matchOrder" (TestList
   where
     check v = TestCase (assertBool "" v)
 
+-- An inheritance hiararchy that only gives nontrivial types to ints and where
+-- the relationship between types is described explicitly by the map below.
+data TestHierarchy = TestHierarchy
+
+testInheritance = Map.fromList (
+  -- 2 <: 1 <: 0
+  [ (2, [1])
+  , (1, [0])
+  -- 14 <: 13 <: 12 <: 11 <: 0, also 14 <: 2 <: 1 <: 0
+  , (14, [13, 2])
+  , (13, [12])
+  , (12, [11])
+  , (11, [0])
+  ])
+
+instance M.TypeHierarchy TestHierarchy where
+  typeOf _ (V.Int n) = V.Uid n
+  typeOf _ _ = V.Uid 0
+  superTypes _ (V.Uid n) = map V.Uid (Map.findWithDefault [] n testInheritance)
+
+testSingleGuards = TestLabel "singleGuards" (TestList
+  [ check M.AnyMatch M.Any (V.Str "foo")
+  , check M.AnyMatch M.Any (V.Int 0)
+  , check M.AnyMatch M.Any V.Null
+  , check M.AnyMatch M.Any (V.Bool True)
+  , check M.NoMatch (M.Eq V.Null) (V.Str "foo")
+  , check M.NoMatch (M.Eq V.Null) (V.Int 0)
+  , check M.EqMatch (M.Eq V.Null) V.Null
+  , check (M.IsMatch 0) (M.Is (V.Uid 2)) (V.Int 2)
+  , check (M.IsMatch 1) (M.Is (V.Uid 1)) (V.Int 2)
+  , check (M.IsMatch 2) (M.Is (V.Uid 0)) (V.Int 2)
+  , check M.NoMatch (M.Is (V.Uid 2)) (V.Int 1)
+  , check (M.IsMatch 0) (M.Is (V.Uid 1)) (V.Int 1)
+  , check (M.IsMatch 1) (M.Is (V.Uid 0)) (V.Int 1)
+  , check M.NoMatch (M.Is (V.Uid 2)) (V.Int 0)
+  , check M.NoMatch (M.Is (V.Uid 1)) (V.Int 0)
+  , check (M.IsMatch 0) (M.Is (V.Uid 0)) (V.Int 0)
+  , check (M.IsMatch 3) (M.Is (V.Uid 0)) (V.Int 14)
+  , check (M.IsMatch 3) (M.Is (V.Uid 0)) (V.Int 13)
+  , check (M.IsMatch 2) (M.Is (V.Uid 0)) (V.Int 12)
+  , check M.NoMatch (M.Is (V.Uid 0)) (V.Int 15)
+  ])
+  where
+    check expected guard value = TestCase (assertEqual "" expected result)
+      where
+        result = M.matchGuard TestHierarchy guard value
+
 testAll = runTestTT (TestList
   [ testTokenize
   , testSexpParsing
@@ -245,6 +293,7 @@ testAll = runTestTT (TestList
   , testUidStream
   , testEvalExpr
   , testMatchOrder
+  , testSingleGuards
   ])
 
 main = testAll
