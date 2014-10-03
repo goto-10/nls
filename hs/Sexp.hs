@@ -22,10 +22,10 @@ data Token
 allTokens =
   [ ("(\\$+|@+)([a-z_]+)", makeIdent)
   , ("\\.([a-z_]+)", makeNamedOp)
-  , ("([-+<>=:!]+)", makeOperator)
+  , ("([-+<>=:!*]+)", makeOperator)
   , ("([a-z_]+)", makeWord)
   , ("([0-9]+)", makeInt)
-  , ("([(){};])", makeDelimiter)
+  , ("([(){};,])", makeDelimiter)
   , ("[ \\t\\r\\f\\n]", ignoreToken)
   ]
   where

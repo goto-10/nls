@@ -1,5 +1,6 @@
 import Test.HUnit
 import qualified Data.Map as Map
+import qualified Data.List as List
 import qualified Value as V
 import qualified Sexp as S
 import qualified Eval as E
@@ -291,32 +292,133 @@ maybeMap _ Nothing = Nothing
 
 sAn = M.ScoreAny
 sEq = M.ScoreEq
+sIs = M.ScoreIs
+
+-- Parse a signature string (say "(1 2: *, 3 4: =8; 5, 6: *)") into a cut
+-- signature value. Writing out the signature values becomes pretty horrible as
+-- they become long, this makes them more manageable.
+parseCutSignature str = result
+  where
+    (tokens, _) = S.tokenize str
+    parseList ((S.DelimToken "("):rest) params cuts = parseList rest params cuts
+    parseList ((S.DelimToken ","):rest) params cuts = parseList rest params cuts
+    parseList ((S.DelimToken ";"):rest) params cuts = parseList rest [] ((reverse params):cuts)
+    parseList [S.DelimToken ")"] [] cuts = (reverse cuts, [])
+    parseList list@[S.DelimToken ")"] params cuts = parseList ((S.DelimToken ";"):list) params cuts
+    parseList list params cuts = parseParam list [] M.Any params cuts
+    parseParam ((S.IntToken n):rest) tags guard params cuts
+      = parseParam rest ((V.Int n):tags) guard params cuts
+    parseParam ((S.OpToken ":"):(S.OpToken "*"):rest) tags _ params cuts
+      = parseParam rest tags M.Any params cuts
+    parseParam ((S.OpToken ":"):(S.OpToken "="):(S.IntToken n):rest) tags _ params cuts
+      = parseParam rest tags (M.Eq (V.Int n)) params cuts
+    parseParam ((S.OpToken ":"):(S.WordToken "is"):(S.IntToken n):rest) tags _ params cuts
+      = parseParam rest tags (M.Is (V.Uid n)) params cuts
+    parseParam rest tags guard params cuts = parseList rest (param:params) cuts
+      where
+        param = M.Parameter tags guard
+    (result, _) = parseList tokens [] []
+
+-- Parse a regular non-cut signature. Having cuts is still allowed, they just
+-- get smushed together into the result.
+parseSignature str = concat (parseCutSignature str)
 
 testSignatureMatching = TestLabel "signatureMatching" (TestList
-  [ check Nothing [([1], M.Any), ([2], M.Any)] [(1, 3)]
-  , check Nothing [([1], M.Any), ([2], M.Any)] [(2, 3)]
-  , check Nothing [([1], M.Any), ([2], M.Any)] [(3, 3)]
-  , check (Just [(1, sAn)]) [([1], M.Any)] [(1, 3)]
-  , check (Just [(1, sAn)]) [([1], M.Any)] [(1, 3), (2, 4)]
-  , check (Just [(1, sAn)]) [([1], M.Any)] [(2, 5), (1, 6)]
-  , check (Just [(1, sEq)]) [([1], M.Eq (V.Int 3))] [(1, 3)]
-  , check Nothing [([1], M.Eq (V.Int 4))] [(1, 3)]
-  , check (Just [(1, sAn), (2, sAn), (3, sAn)])
-      [([1], M.Any), ([2], M.Any), ([3], M.Any)]
-      [(1, 7), (2, 7), (3, 7)]
-  , check (Just [(1, sAn), (3, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(1, 10), (3, 11)]
-  , check (Just [(2, sAn), (3, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(2, 12), (3, 13)]
-  , check (Just [(1, sAn), (4, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(1, 14), (4, 15)]
-  , check (Just [(2, sAn), (4, sAn)]) [([1, 2], M.Any), ([3, 4], M.Any)] [(2, 16), (4, 17)]
+  [ check Nothing "(1: *, 2: *)" [(1, 3)]
+  , check Nothing "(1: *, 2: *)" [(2, 3)]
+  , check Nothing "(1: *, 2: *)" [(3, 3)]
+  , check (Just [(1, sAn)]) "(1: *)" [(1, 3)]
+  , check (Just [(1, sAn)]) "(1: *)" [(1, 3), (2, 4)]
+  , check (Just [(1, sAn)]) "(1: *)" [(2, 5), (1, 6)]
+  , check (Just [(1, sEq)]) "(1: =3)" [(1, 3)]
+  , check Nothing "(1: =4)" [(1, 3)]
+  , check (Just [(1, sIs 0)]) "(1: is 2)" [(1, 2)]
+  , check (Just [(1, sIs 1)]) "(1: is 1)" [(1, 2)]
+  , check (Just [(1, sIs 2)]) "(1: is 0)" [(1, 2)]
+  , check (Just [(1, sAn), (2, sAn), (3, sAn)]) "(1: *, 2: *, 3: *)" [(1, 7), (2, 7), (3, 7)]
+  , check (Just [(1, sAn), (3, sAn)]) "(1 2: *, 3 4: *)" [(1, 10), (3, 11)]
+  , check (Just [(2, sAn), (3, sAn)]) "(1 2: *, 3 4: *)" [(2, 12), (3, 13)]
+  , check (Just [(1, sAn), (4, sAn)]) "(1 2: *, 3 4: *)" [(1, 14), (4, 15)]
+  , check (Just [(2, sAn), (4, sAn)]) "(1 2: *, 3 4: *)" [(2, 16), (4, 17)]
   ])
   where
-    check expList sigList invList = TestCase (assertEqual "" expected result)
+    check expList sigStr invList = TestCase (assertEqual "" expected result)
       where
-        signature = [M.Parameter (map V.Int tags) guard | (tags, guard) <- sigList]
+        signature = (parseSignature sigStr)
         invocation = Map.fromList [(V.Int key, V.Int value) | (key, value) <- invList]
         result = M.matchSignature TestHierarchy signature invocation
         expected = maybeMap wrapExpected expList
-        wrapExpected scores = [(V.Int tag, score) | (tag, score) <- scores]
+        wrapExpected scores = M.ScoreRecord [(V.Int tag, score) | (tag, score) <- scores]
+
+testCompareScoreRecords = TestLabel "compareScoreRecords" (TestList
+  [ check equal [] [] []
+  , check equal [(1, sAn)] [(1, sAn)] [(1, sAn)]
+  , check better [(1, sAn), (2, sAn)] [(1, sAn), (2, sAn)] [(1, sAn)]
+  , check worse [(1, sAn), (2, sAn)] [(1, sAn)] [(1, sAn), (2, sAn)]
+  , check equal [(1, sAn), (2, sAn)] [(1, sAn), (2, sAn)] [(1, sAn), (2, sAn)]
+  , check equal [(1, sAn), (2, sAn)] [(1, sAn), (2, sAn)] [(2, sAn), (1, sAn)]
+  , check ambiguous [(1, sAn), (2, sAn), (3, sAn)] [(1, sAn), (2, sAn)] [(1, sAn), (3, sAn)]
+  ])
+  where
+    equal = M.ScoreRecordOrdering False False
+    worse = M.ScoreRecordOrdering False True
+    better = M.ScoreRecordOrdering True False
+    ambiguous = M.ScoreRecordOrdering True True
+    check expectedOrder expectedRecord a b = (TestList
+      [ TestCase (assertEqual "" expectedOrder foundOrder)
+      , TestCase (assertEqual "" (toRecord expectedRecord) foundRecord)
+      ])
+      where
+        (foundOrder, foundRecord) = M.compareScoreRecords (toRecord a) (toRecord b)
+        toRecord elms = M.ScoreRecord [(V.Int n, score) | (n, score) <- elms]
+
+parseSigAssoc input = map parseEntry input
+  where
+    parseEntry (str, value) = 
+
+testSigAssocLookup = TestLabel "sigAssocLookup" (TestList
+  [
+  ])
+
+-- Replaces the n'th element in the given list with the given value.
+replace [] _ _ = []
+replace (x:rest) 0 y = y:rest
+replace (x:rest) n y = x:(replace rest (n - 1) y)
+
+-- Parses a list of cut signature strings into a signature tree.
+parseSigTree input = foldr parseAndMerge M.emptySigTree input
+  where
+    parseAndMerge (str, value) tree = merge tree (parseCutSignature str) value
+    -- Merging into an empty tree node just replaces its value. There is no case
+    -- for merging into a non-empty one because that's not really meaningful.
+    merge (M.SigTree Nothing children) [] value = M.SigTree (Just value) children
+    -- Merging into an existing tree. Here we look for an existing child that
+    -- matches exactly and if there is one we merge into that. Otherwise we add
+    -- a fresh child.
+    merge (M.SigTree treeValue children) (next:rest) value = newTree
+      where
+        childSameAsNext (sig, tree) = (sig == next)
+        newChildren = case List.findIndex childSameAsNext children of
+          Nothing -> (next, merge M.emptySigTree rest value):children
+          Just i -> replace children i (next, mergedChild)
+            where
+              (sig, child) = children !! i
+              mergedChild = merge child rest value
+        newTree = M.SigTree treeValue newChildren
+
+testSigTreeLookup = TestLabel "sigTreeLookup" (TestList
+  [ check (Just 1) emptySigTree []
+  ])
+  where
+    check expected sigtree argList = TestCase (assertEqual "" expected found)
+      where
+        found = M.sigTreeLookup TestHierarchy sigtree args
+        args = Map.fromList [(V.Int key, V.Int value) | (key, value) <- argList]
+    testSigTree0 = parseSigTree
+      [ ("(1: *; 2: *)", 1)
+      , ("(1: *; 2: *; 3: *)", 2)
+      ]
+    emptySigTree = parseSigTree [("()", 1)]
 
 testAll = runTestTT (TestList
   [ testTokenize
@@ -327,6 +429,9 @@ testAll = runTestTT (TestList
   , testMatchOrder
   , testSingleGuards
   , testSignatureMatching
+  , testCompareScoreRecords
+  , testSigAssocLookup
+  , testSigTreeLookup
   ])
 
 main = testAll
