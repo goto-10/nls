@@ -374,11 +374,26 @@ testCompareScoreRecords = TestLabel "compareScoreRecords" (TestList
 
 parseSigAssoc input = map parseEntry input
   where
-    parseEntry (str, value) = 
+    parseEntry (str, value) = (parseSignature str, value)
 
 testSigAssocLookup = TestLabel "sigAssocLookup" (TestList
-  [
+  [ check (M.Unique 1 [V.Int 1]) [("(1: *)", 1)] [(1, 0)]
+  , check (M.Multiple [10, 11]) [("(1: *)", 10), ("(1: *)", 11)] [(1, 0)]
+  , check (M.Unique 12 [V.Int 1]) [("(1: *)", 12)] [(1, 0), (2, 1)]
+  , check (M.Unique 13 [V.Int 2]) [("(2: *)", 13)] [(1, 0), (2, 1)]
+  , check (M.Unique 14 [V.Int 1, V.Int 2]) [("(1: *, 2: *)", 14)] [(1, 0), (2, 1)]
+  , check (M.Unique 15 [V.Int 1, V.Int 2]) [("(1: *, 2: *)", 15), ("(1: *)", 16)] [(1, 0), (2, 1)]
+  , check (M.Unique 17 [V.Int 1, V.Int 2]) [("(1: *, 2: *)", 17), ("(1: *)", 18), ("(2: *)", 19)] [(1, 0), (2, 1)]
+  , check M.Ambiguous [("(1: *)", 20), ("(2: *)", 21)] [(1, 0), (2, 1)]
+  , check (M.Unique 23 [V.Int 2]) [("(1: *)", 22), ("(2: *)", 23)] [(2, 1)]
+  , check M.None [("(1: *)", 22), ("(3: *)", 23)] [(2, 1)]
   ])
+  where
+    check expected assocList argList = TestCase (assertEqual "" expected found)
+      where
+        assoc = parseSigAssoc assocList
+        args = Map.fromList [(V.Int tag, V.Int value) | (tag, value) <- argList]
+        found = M.sigAssocLookup TestHierarchy args assoc
 
 -- Replaces the n'th element in the given list with the given value.
 replace [] _ _ = []
@@ -407,18 +422,123 @@ parseSigTree input = foldr parseAndMerge M.emptySigTree input
         newTree = M.SigTree treeValue newChildren
 
 testSigTreeLookup = TestLabel "sigTreeLookup" (TestList
-  [ check (Just 1) emptySigTree []
+  [ check (Just 1) emptyTree []
+  , check Nothing anyTree [(1, 0)]
+  , check (Just 1) anyTree [(1, 0), (2, 0)]
+  , check (Just 2) anyTree [(1, 0), (2, 0), (3, 0)]
+  , check Nothing anyTree [(1, 0), (2, 0), (3, 0), (4, 0)]
+  , check (Just 3) anyTree [(1, 0), (2, 0), (4, 0)]
+  , check (Just 4) anyTree [(1, 0), (2, 0), (5, 0)]
+  , check (Just 1) eqTree [(1, 7)]
+  , check (Just 2) eqTree [(1, 8)]
+  , check (Just 3) eqTree [(1, 9)]
+  , check (Just 4) eqTree [(1, 9), (2, 10)]
+  , check Nothing eqTree [(1, 6)]
+  , check (Just 1) flatIsTree [(1, 0)]
+  , check (Just 2) flatIsTree [(1, 1)]
+  , check (Just 3) flatIsTree [(1, 2)]
+  , check (Just 4) flatIsTree [(1, 3)]
+  , check (Just 00) fullUncutIsTree [(1, 0), (2, 0)]
+  , check (Just 10) fullUncutIsTree [(1, 1), (2, 0)]
+  , check (Just 20) fullUncutIsTree [(1, 2), (2, 0)]
+  , check (Just 01) fullUncutIsTree [(1, 0), (2, 1)]
+  , check (Just 11) fullUncutIsTree [(1, 1), (2, 1)]
+  , check (Just 21) fullUncutIsTree [(1, 2), (2, 1)]
+  , check (Just 02) fullUncutIsTree [(1, 0), (2, 2)]
+  , check (Just 12) fullUncutIsTree [(1, 1), (2, 2)]
+  , check (Just 22) fullUncutIsTree [(1, 2), (2, 2)]
+  , check (Just 00) fullCutIsTree [(1, 0), (2, 0)]
+  , check (Just 10) fullCutIsTree [(1, 1), (2, 0)]
+  , check (Just 20) fullCutIsTree [(1, 2), (2, 0)]
+  , check (Just 01) fullCutIsTree [(1, 0), (2, 1)]
+  , check (Just 11) fullCutIsTree [(1, 1), (2, 1)]
+  , check (Just 21) fullCutIsTree [(1, 2), (2, 1)]
+  , check (Just 02) fullCutIsTree [(1, 0), (2, 2)]
+  , check (Just 12) fullCutIsTree [(1, 1), (2, 2)]
+  , check (Just 22) fullCutIsTree [(1, 2), (2, 2)]
+  , check (Just 00) partialUncutIsTree [(1, 0), (2, 0)]
+  , check (Just 10) partialUncutIsTree [(1, 1), (2, 0)]
+  , check (Just 20) partialUncutIsTree [(1, 2), (2, 0)]
+  , check (Just 01) partialUncutIsTree [(1, 0), (2, 1)]
+  , check Nothing partialUncutIsTree [(1, 1), (2, 1)]
+  , check Nothing partialUncutIsTree [(1, 2), (2, 1)]
+  , check (Just 02) partialUncutIsTree [(1, 0), (2, 2)]
+  , check Nothing partialUncutIsTree [(1, 1), (2, 2)]
+  , check Nothing partialUncutIsTree [(1, 2), (2, 2)]
+  , check (Just 00) partialCutIsTree [(1, 0), (2, 0)]
+  , check (Just 10) partialCutIsTree [(1, 1), (2, 0)]
+  , check (Just 20) partialCutIsTree [(1, 2), (2, 0)]
+  , check (Just 01) partialCutIsTree [(1, 0), (2, 1)]
+  , check (Just 10) partialCutIsTree [(1, 1), (2, 1)]
+  , check (Just 20) partialCutIsTree [(1, 2), (2, 1)]
+  , check (Just 02) partialCutIsTree [(1, 0), (2, 2)]
+  , check (Just 10) partialCutIsTree [(1, 1), (2, 2)]
+  , check (Just 20) partialCutIsTree [(1, 2), (2, 2)]
   ])
   where
     check expected sigtree argList = TestCase (assertEqual "" expected found)
       where
         found = M.sigTreeLookup TestHierarchy sigtree args
         args = Map.fromList [(V.Int key, V.Int value) | (key, value) <- argList]
-    testSigTree0 = parseSigTree
+    anyTree = parseSigTree
       [ ("(1: *; 2: *)", 1)
       , ("(1: *; 2: *; 3: *)", 2)
+      , ("(1: *; 2: *; 4: *)", 3)
+      , ("(1: *; 2: *; 5: *)", 4)
       ]
-    emptySigTree = parseSigTree [("()", 1)]
+    eqTree = parseSigTree
+      [ ("(1: =7)", 1)
+      , ("(1: =8)", 2)
+      , ("(1: =9)", 3)
+      , ("(1: =9, 2: =10)", 4)
+      ]
+    flatIsTree = parseSigTree
+      [ ("(1: is 0)", 1)
+      , ("(1: is 1)", 2)
+      , ("(1: is 2)", 3)
+      , ("(1: *)", 4)
+      ]
+    fullUncutIsTree = parseSigTree
+      [ ("(1: is 0, 2: is 0)", 00)
+      , ("(1: is 1, 2: is 0)", 10)
+      , ("(1: is 2, 2: is 0)", 20)
+      , ("(1: is 0, 2: is 1)", 01)
+      , ("(1: is 1, 2: is 1)", 11)
+      , ("(1: is 2, 2: is 1)", 21)
+      , ("(1: is 0, 2: is 2)", 02)
+      , ("(1: is 1, 2: is 2)", 12)
+      , ("(1: is 2, 2: is 2)", 22)
+      ]
+    fullCutIsTree = parseSigTree
+      [ ("(1: is 0; 2: is 0)", 00)
+      , ("(1: is 1; 2: is 0)", 10)
+      , ("(1: is 2; 2: is 0)", 20)
+      , ("(1: is 0; 2: is 1)", 01)
+      , ("(1: is 1; 2: is 1)", 11)
+      , ("(1: is 2; 2: is 1)", 21)
+      , ("(1: is 0; 2: is 2)", 02)
+      , ("(1: is 1; 2: is 2)", 12)
+      , ("(1: is 2; 2: is 2)", 22)
+      ]
+    partialUncutIsTree = parseSigTree
+      [ ("(1: is 0, 2: is 0)", 00)
+      , ("(1: is 1, 2: is 0)", 10)
+      , ("(1: is 2, 2: is 0)", 20)
+      , ("(1: is 0, 2: is 1)", 01)
+      , ("(1: is 0, 2: is 2)", 02)
+      ]
+    partialCutIsTree = parseSigTree
+      [ ("(1: is 0; 2: is 0)", 00)
+      , ("(1: is 1; 2: is 0)", 10)
+      , ("(1: is 2; 2: is 0)", 20)
+      , ("(1: is 0; 2: is 1)", 01)
+      , ("(1: is 0; 2: is 2)", 02)
+      ]
+    emptyTree = parseSigTree [("()", 1)]
+
+  -- 2 <: 1 <: 0
+  -- 14 <: 13 <: 12 <: 11 <: 0, also 14 <: 2 <: 1 <: 0
+
 
 testAll = runTestTT (TestList
   [ testTokenize

@@ -6,6 +6,7 @@ module Method
 , SigTree (SigTree)
 , ScoreRecord (ScoreRecord)
 , ScoreRecordOrdering (ScoreRecordOrdering)
+, SigAssocLookupResult (Unique, Multiple, Ambiguous, None)
 , matchGuard
 , matchSignature
 , emptySigTree
@@ -18,6 +19,7 @@ import qualified Value as V
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Maybe as Maybe
+import Debug.Trace
 
 -- Parameter guard
 data Guard
@@ -148,7 +150,7 @@ type SigAssoc a = [(Signature, a)]
 
 data SigAssocLookupResult a
   -- There was one unique best matching result.
-  = Unique a
+  = Unique a [V.Value]
   -- There were several equally good matching results.
   | Multiple [a]
   -- There were multiple results that weren't equivalent without any of then
@@ -156,13 +158,18 @@ data SigAssocLookupResult a
   | Ambiguous
   -- There was not a single match.
   | None
+  deriving (Show, Eq)
 
-sigAssocLookup hierarchy args assoc = buildResult bestValues isSynthetic
+sigAssocLookup hierarchy args assoc = buildResult bestValues maxRecord isSynthetic
   where
+    -- Folding right means the resulting list of results will be ordered like
+    -- the input if it's a multiple.
     (bestValues, maxRecord, isSynthetic) = foldr advanceResult ([], ScoreRecord [], False) assoc
     advanceResult (nextSignature, nextValue) (currentResults, currentMax, isSynthetic) =
       case matchSignature hierarchy nextSignature args of
+        -- If this signature doesn't match the args there's nothing to do.
         Nothing -> (currentResults, currentMax, isSynthetic)
+        -- If it does match we have to compare the result to the current state.
         Just nextRecord -> mergeNextRecord nextValue currentResults currentMax isSynthetic nextRecord
     mergeNextRecord nextValue currentResults currentMax isSynthetic nextRecord =
       case (hasBetter, hasWorse) of
@@ -184,14 +191,13 @@ sigAssocLookup hierarchy args assoc = buildResult bestValues isSynthetic
       where
         (nextOrdering, nextMax) = compareScoreRecords nextRecord currentMax
         ScoreRecordOrdering hasBetter hasWorse = nextOrdering
-    buildResult _ True = Ambiguous
-    buildResult [] _ = None
-    buildResult [value] _ = Unique value
-    buildResult values _ = Multiple values
-
-
-
--- sigAssocLookup args assoc = searchThroughAssoc assoc [] 
+    -- Convert the result list+isSynthetic to a result that's easier to
+    -- interpret.
+    buildResult _ _ True = Ambiguous
+    buildResult [] _ _ = None
+    buildResult [value] record _ = Unique value (grabTags record)
+    buildResult values _ _ = Multiple values
+    grabTags (ScoreRecord assoc) = (map fst assoc)
 
 -- A signature tree which maps arguments to values through multiple dispatch.
 data SigTree a = SigTree (Maybe a) [(Signature, SigTree a)]
@@ -203,4 +209,9 @@ sigTreeLookup hierarchy (SigTree v branches) args
     | Map.null args = v
     | otherwise = deeperResult
   where
-    deeperResult = Nothing
+    assocResult = sigAssocLookup hierarchy args branches
+    deeperResult = case assocResult of
+      Unique child tags -> sigTreeLookup hierarchy child (dropArgs tags args)
+      _ -> Nothing
+    dropArgs tags args = Map.filterWithKey (keyNotInList tags) args
+    keyNotInList list key value = key `notElem` list
