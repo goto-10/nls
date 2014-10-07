@@ -1,39 +1,54 @@
 module Value
-( parseAst
-, Ast (Literal, Variable, Sequence, LocalBinding, NewInstance, CallNative, WithEscape, Ensure)
+( parseExpr
+, Expr (Literal, Variable, Sequence, LocalBinding, NewInstance, CallNative, WithEscape, Ensure, Invoke)
+, Program (Program)
 , Value (Int, Str, Null, Bool, Obj, Hook)
-, Hook (LogHook, EscapeHook)
+, Hook (LogHook, EscapeHook, TypeHook)
 , Phase (Vapor, Fluid, Frozen)
 , Uid (Uid)
-, ObjectState (Instance)
+, ObjectState (InstanceObject, TypeObject)
 , InstanceState (InstanceState)
+, TypeState (TypeState)
 , emptyVaporInstanceState
 ) where
 
 import qualified Sexp as S
 import qualified Data.Map as Map
 
--- Syntax trees.
-data Ast
+-- Expression syntax trees
+data Expr
   = Variable Int Value
-  | LocalBinding Value Ast Ast
+  | LocalBinding Value Expr Expr
   | Literal Value
-  | Sequence [Ast]
+  | Sequence [Expr]
   | NewInstance
-  | CallNative Ast String [Ast]
-  | WithEscape Value Ast
-  | Ensure Ast Ast
+  | CallNative Expr String [Expr]
+  | Invoke [(Value, Expr)]
+  | WithEscape Value Expr
+  | Ensure Expr Expr
   | AstError S.Sexp
   deriving (Show, Eq)
+
+-- Toplevel declarations
+data Decl
+  = NamespaceBinding Value Expr
+  deriving (Show, Eq)
+
+data Program = Program {
+  decls :: [Decl],
+  body :: Expr
+}
 
 -- A unique object id.
 data Uid
   = Uid Int
   deriving (Show, Eq, Ord)
 
+-- A marker used to identify values that have magical support in the interpreter.
 data Hook
   = LogHook
   | EscapeHook Uid
+  | TypeHook
   deriving (Show, Eq, Ord)
 
 -- Runtime values. A general value can't be interpreted independently since part
@@ -65,8 +80,13 @@ emptyVaporInstanceState = InstanceState {
   fields = Map.empty
 }
 
+data TypeState = TypeState {
+  displayName :: Value
+} deriving (Show, Eq)
+
 data ObjectState
-  = Instance InstanceState
+  = InstanceObject InstanceState
+  | TypeObject TypeState
   deriving (Show, Eq)
 
 adaptExpr = adapt
@@ -85,6 +105,8 @@ adaptExpr = adapt
     -- Natives
     adapt (S.List (S.Op "!":(S.Op op):subj:args)) = CallNative (adapt subj) op (map adapt args)
     adapt (S.List (S.Op "!":subj:args)) = CallNative (adapt subj) "!" (map adapt args)
+    -- Invocation
+    adapt (S.List ((S.Op op):subj:rest)) = adaptInvocation op subj rest
     -- Escaping
     adapt (S.List [S.Word "with_escape", S.Ident _ name, S.Word "do", body]) =
       WithEscape (Str name) (adapt body)
@@ -94,6 +116,11 @@ adaptExpr = adapt
     adaptSequence [] = Literal Null
     adaptSequence [e] = adapt e
     adaptSequence elms = Sequence (map adapt elms)
+    adaptInvocation op subj args = Invoke (subjPair:selPair:argPairs)
+      where
+       subjPair = (Str "subject", adapt subj)
+       selPair = (Str "selector", Literal (Str op))
+       argPairs = zip (map Int [0..]) (map adapt args)
 
 -- Parse an s-expression string into a syntax tree.
-parseAst str = adaptExpr (S.parseSexp str)
+parseExpr str = adaptExpr (S.parseSexp str)

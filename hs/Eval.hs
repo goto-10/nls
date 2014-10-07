@@ -1,16 +1,20 @@
 module Eval
 ( eval
 , evalFlat
+, evalProgram
+, evalProgramFlat
 , uidStreamStart
 , nextUidFromStream
 , Result (Normal, Failure)
 , FailureCause (UnboundVariable, AbsentNonLocal)
 , FlatValue (FlatNull, FlatBool, FlatInt, FlatStr, FlatInstance, FlatHook)
+, Methodspace (Methodspace)
 ) where
 
 import qualified Value as V
 import qualified Data.Map as Map
 import qualified Method as M
+import Debug.Trace
 
 -- A stream of ids. 
 data UidStream = UidStream Int
@@ -55,7 +59,8 @@ genUid state = (uid, newState)
 -- The possible reasons for evaluation to fail.
 data FailureCause
   = AbsentNonLocal
-  | AstNotUnderstood V.Ast
+  | ExprNotUnderstood V.Expr
+  | MethodNotUnderstood [(V.Value, V.Value)]
   | UnboundVariable V.Value
   | UnknownCall V.Value String [V.Value]
   deriving (Show, Eq)
@@ -87,31 +92,40 @@ emptyDynamicState = DynamicState {
   nonlocal = absentNonlocal
 }
 
+-- The state that gives behavior to objects.
+data Methodspace a = Methodspace {
+  hierarchy :: a,
+  methods :: M.SigTree Integer
+}
+
 -- Lexically scoped state, that is, state that doesn't propagate from caller to
 -- callee nor the other way (unless there is capturing).
-data LexicalState = LexicalState {
-  scope :: Map.Map V.Value V.Value
+data LexicalState a = LexicalState {
+  scope :: Map.Map V.Value V.Value,
+  methodspace :: Methodspace a
 }
 
 hookScope = Map.fromList (
   [ (V.Str "log", V.Hook V.LogHook)
+  , (V.Str "type", V.Hook V.TypeHook)
   ])
 
 -- Initial empty lexical state.
-emptyLexicalState = LexicalState {
-  scope = hookScope
+emptyLexicalState methodspace = LexicalState {
+  scope = hookScope,
+  methodspace = methodspace
 }
 
 -- The complete context state at a particular point in the evaluation.
-data CompleteState = CompleteState {
-  lexical :: LexicalState,
+data CompleteState a = CompleteState {
+  lexical :: LexicalState a,
   dynamic :: DynamicState,
   pervasive :: PervasiveState
 }
 
 -- Initial empty version of the complete evaluation state.
-emptyCompleteState = CompleteState {
-  lexical = emptyLexicalState,
+emptyCompleteState behavior = CompleteState {
+  lexical = emptyLexicalState behavior,
   dynamic = emptyDynamicState,
   pervasive = emptyPervasiveState
 }
@@ -130,12 +144,14 @@ evalExpr expr continue s0 =
       -> evalNewInstance continue s0
     V.CallNative subj name args
       -> evalCallNative subj name args continue s0
+    V.Invoke args
+      -> evalInvoke args continue s0
     V.WithEscape name body
       -> evalWithEscape name body continue s0
     V.Ensure body ensure
       -> evalEnsure body ensure continue s0
     _
-      -> Failure (AstNotUnderstood expr) (pervasive s0)
+      -> Failure (ExprNotUnderstood expr) (pervasive s0)
 
 evalVariable name continue s0 =
   if Map.member name vars
@@ -169,7 +185,7 @@ evalNewInstance continue s0 = continue (V.Obj uid) p2
     (uid, p1) = genUid (pervasive s0)
     state = V.emptyVaporInstanceState
     oldObjects = objects p1
-    newObjects = Map.insert uid (V.Instance state) oldObjects
+    newObjects = Map.insert uid (V.InstanceObject state) oldObjects
     p2 = p1 { objects = newObjects }
 
 -- Evaluates a list of expressions, yielding a list of their values.
@@ -247,11 +263,26 @@ evalCallNative recvExpr name argsExprs continue s0 = evalExpr recvExpr thenArgs 
           where
             s2 = s0 {pervasive=p2}
 
+evalInvoke argExprs continue s0 = evalList (map snd argExprs) thenInvoke s0
+  where
+    l0 = lexical s0
+    methodspace0 = methodspace l0
+    hierarchy0 = hierarchy methodspace0
+    methods0 = methods methodspace0
+    thenInvoke argValues p1 = case method of
+      Nothing -> Failure (MethodNotUnderstood argList) p1
+      Just method -> continue (V.Int 0) p1
+      where
+        method = M.sigTreeLookup hierarchy0 methods0 argMap
+        argList = zip (map fst argExprs) argValues
+        argMap = Map.fromList argList
+
 -- Natives
 dispatchNative subj = case subj of
   V.Hook V.LogHook -> callLogHookNative subj
-  V.Int _ -> callIntNative subj
   V.Hook (V.EscapeHook _) -> callEscapeHookNative subj
+  V.Hook V.TypeHook -> callTypeHookNative subj
+  V.Int _ -> callIntNative subj
   _ -> failNative subj
 
 callLogHookNative _ "!" [value] continue s0 = continue value p1
@@ -262,11 +293,78 @@ callLogHookNative _ "!" [value] continue s0 = continue value p1
     p1 = p0 {valueLog = log1}
 callLogHookNative recv op args continue s0 = failNative recv op args continue s0
 
+callTypeHookNative _ "!" [value] continue s0 = continue result p0
+  where
+    l0 = lexical s0
+    p0 = pervasive s0
+    methodspace0 = methodspace l0
+    hierarchy0 = hierarchy methodspace0
+    result = V.Obj (M.typeOf hierarchy0 value)
+callTypeHookNative _ "display_name" [V.Obj uid] continue s0 = continue displayName p0
+  where
+    p0 = pervasive s0
+    (V.TypeObject state) = (objects p0) Map.! uid
+    (V.TypeState displayName) = state
+callTypeHookNative recv op args continue s0 = failNative recv op args continue s0
+
 callIntNative (V.Int a) "+" [V.Int b] continue s0 = continue (V.Int (a + b)) (pervasive s0)
 callIntNative (V.Int a) "-" [V.Int b] continue s0 = continue (V.Int (a - b)) (pervasive s0)
 callIntNative recv op args continue s0 = failNative recv op args continue s0
 
 failNative recv op args _ s0 = Failure (UnknownCall recv op args) (pervasive s0)
+
+-- The set of "magical" root values
+data RootValues = RootValues {
+  intType :: V.Value,
+  strType :: V.Value,
+  nullType :: V.Value,
+  boolType :: V.Value,
+  fallbackType :: V.Value
+} deriving (Show)
+
+-- Returns the default root state for the given pervasive state, along with the
+-- pervasive state to use from then on.
+defaultRootValues p0 = (roots, p5)
+  where
+    rootType pa0 displayName = (V.Obj uid, pa2)
+      where
+        state = V.TypeState displayName
+        (uid, pa1) = genUid pa0
+        objects1 = objects pa1
+        objects2 = Map.insert uid (V.TypeObject state) objects1
+        pa2 = pa1 {objects = objects2}
+    (fallbackType, p1) = rootType p0 V.Null
+    (intType, p2) = rootType p1 (V.Str "Integer")
+    (strType, p3) = rootType p2 (V.Str "String")
+    (nullType, p4) = rootType p3 (V.Str "Null")
+    (boolType, p5) = rootType p4 (V.Str "Bool")
+    roots = RootValues {
+      fallbackType = fallbackType,
+      intType = intType,
+      strType = strType,
+      nullType = nullType,
+      boolType = boolType
+    }
+
+-- Given a set of roots and a value, returns the type of the value.
+typeFromRoots roots value = uid
+  where
+    (V.Obj uid) = case value of
+      V.Int _ -> intType roots
+      V.Str _ -> strType roots
+      V.Null -> nullType roots
+      V.Bool _ -> boolType roots
+      _ -> fallbackType roots
+
+-- Default object system
+data ObjectSystemState = ObjectSystemState {
+  roots :: RootValues,
+  inheritance :: Map.Map V.Uid [V.Uid]
+}
+
+instance M.TypeHierarchy ObjectSystemState where
+  typeOf oss value = typeFromRoots (roots oss) value
+  superTypes oss subtype = Map.findWithDefault [] subtype (inheritance oss)
 
 -- Flattened runtime values, that is, values where the part that for Values
 -- belong in the pervasive state have been extracted and embedded directly in
@@ -278,6 +376,7 @@ data FlatValue
   | FlatStr String
   | FlatHook V.Hook
   | FlatInstance V.Uid V.InstanceState
+  | FlatType V.Uid V.TypeState
   deriving (Show, Eq)
 
 flatten p V.Null = FlatNull
@@ -286,17 +385,40 @@ flatten p (V.Int v) = FlatInt v
 flatten p (V.Str v) = FlatStr v
 flatten p (V.Hook v) = FlatHook v
 flatten p (V.Obj id) = case state of
-  V.Instance inst -> FlatInstance id inst
+  V.InstanceObject state -> FlatInstance id state
+  V.TypeObject state -> FlatType id state
   where
     objs = objects p
     state = objs Map.! id
 
 -- Evaluates the given expression, yielding an evaluation result
-eval :: V.Ast -> Result (V.Value, PervasiveState) PervasiveState
-eval expr = evalExpr expr endContinuation emptyCompleteState
+eval :: (M.TypeHierarchy a) => Methodspace a -> V.Expr -> Result (V.Value, PervasiveState) PervasiveState
+eval methodspace expr = evalExpr expr endContinuation (emptyCompleteState methodspace)
 
-evalFlat :: V.Ast -> Result (FlatValue, [FlatValue]) [V.Value]
-evalFlat expr = case eval expr of
+evalFlat :: (M.TypeHierarchy a) =>  Methodspace a -> V.Expr -> Result (FlatValue, [FlatValue]) [V.Value]
+evalFlat behavior expr = case eval behavior expr of
+  Normal (value, p0) -> Normal (flatValue, flatLog)
+    where
+      flatValue = flatten p0 value
+      log = (valueLog p0)
+      flatLog = map (flatten p0) log
+  Failure cause p0 -> Failure cause (valueLog p0)
+
+evalProgram :: V.Program -> Result (V.Value, PervasiveState) PervasiveState
+evalProgram (V.Program decls body) = evalExpr body endContinuation initialState
+  where
+    p0 = emptyPervasiveState
+    (roots, p1) = defaultRootValues p0
+    oss = ObjectSystemState roots Map.empty
+    methodspace = Methodspace oss M.emptySigTree
+    initialState = CompleteState {
+      lexical = emptyLexicalState methodspace,
+      dynamic = emptyDynamicState,
+      pervasive = p1
+    }
+
+evalProgramFlat :: V.Program -> Result (FlatValue, [FlatValue]) [V.Value]
+evalProgramFlat program = case evalProgram program of
   Normal (value, p0) -> Normal (flatValue, flatLog)
     where
       flatValue = flatten p0 value

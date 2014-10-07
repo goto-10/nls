@@ -86,7 +86,7 @@ testSexpParsing = TestLabel "sexpParsing" (TestList
         found = S.parseSexp input
         testCase = TestCase (assertEqual "" expected found)
 
-testAstParsing = TestLabel "astParsing" (TestList
+testExprParsing = TestLabel "exprParsing" (TestList
   [ check (aVa 0 (vSt "foo")) "$foo"
   , check (aIn 10) "10"
   , check (aLi vNl) "null"
@@ -99,7 +99,7 @@ testAstParsing = TestLabel "astParsing" (TestList
   where
     check expected input = TestLabel input testCase
       where
-        found = V.parseAst input
+        found = V.parseExpr input
         testCase = TestCase (assertEqual "" expected found)
 
 -- Join a list of lines into a single string. Similar to unlines but without the
@@ -194,6 +194,7 @@ testEvalExpr = TestLabel "evalExpr" (TestList
       , "   ensure"
       , "     (! $log 30)))))"
       ])
+  -- , check (fIn 5) [] "(+ 2 3)"
   -- Failures
   , checkFail (E.UnboundVariable (vSt "foo")) [] "$foo"
   , checkFail (E.UnboundVariable (vSt "b")) [] "(def $a := 9 in $b)"
@@ -209,8 +210,8 @@ testEvalExpr = TestLabel "evalExpr" (TestList
     -- Check that evaluation succeeds.
     check expected expLog input = TestLabel input testCase
       where
-        ast = V.parseAst input
-        result = E.evalFlat ast
+        ast = V.parseExpr input
+        result = E.evalFlat testBehavior ast
         testCase = case result of
           E.Normal (found, log) -> checkResult found log
           E.Failure cause _ -> TestCase (assertFailure ("Unexpected failure, " ++ show cause))
@@ -221,13 +222,33 @@ testEvalExpr = TestLabel "evalExpr" (TestList
     -- Check that evaluation fails
     checkFail expected expLog input = TestLabel input testCase
       where
-        ast = V.parseAst input
-        result = E.evalFlat ast
+        ast = V.parseExpr input
+        result = E.evalFlat testBehavior ast
         testCase = case result of
           E.Normal (found, log) -> TestCase (assertFailure ("Expected failure, found " ++ show found))
           E.Failure cause foundLog -> checkFailure cause foundLog
         checkFailure cause foundLog = (TestList
           [ TestCase (assertEqual "" expected cause)
+          , TestCase (assertEqual "" expLog foundLog)
+          ])
+    testBehavior = E.Methodspace TestHierarchy M.emptySigTree
+
+testEvalProgram = TestLabel "evalProgram" (TestList
+  [ check (fSt "Integer") [] "(! .display_name $type (! $type 3))"
+  , check (fSt "Null") [] "(! .display_name $type (! $type null))"
+  , check (fSt "Bool") [] "(! .display_name $type (! $type true))"
+  , check (fSt "Bool") [] "(! .display_name $type (! $type false))"
+  ])
+  where
+    check expected expLog input = TestLabel input testCase
+      where
+        ast = V.Program [] (V.parseExpr input)
+        result = E.evalProgramFlat ast
+        testCase = case result of
+          E.Normal (found, log) -> checkResult found log
+          E.Failure cause _ -> TestCase (assertFailure ("Unexpected failure, " ++ show cause))
+        checkResult found foundLog = (TestList
+          [ TestCase (assertEqual "" expected found)
           , TestCase (assertEqual "" expLog foundLog)
           ])
 
@@ -536,14 +557,10 @@ testSigTreeLookup = TestLabel "sigTreeLookup" (TestList
       ]
     emptyTree = parseSigTree [("()", 1)]
 
-  -- 2 <: 1 <: 0
-  -- 14 <: 13 <: 12 <: 11 <: 0, also 14 <: 2 <: 1 <: 0
-
-
 testAll = runTestTT (TestList
   [ testTokenize
   , testSexpParsing
-  , testAstParsing
+  , testExprParsing
   , testUidStream
   , testEvalExpr
   , testMatchOrder
@@ -552,6 +569,7 @@ testAll = runTestTT (TestList
   , testCompareScoreRecords
   , testSigAssocLookup
   , testSigTreeLookup
+  , testEvalProgram
   ])
 
 main = testAll
