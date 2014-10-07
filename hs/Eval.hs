@@ -6,13 +6,13 @@ module Eval
 , uidStreamStart
 , nextUidFromStream
 , Result (Normal, Failure)
-, FailureCause (UnboundVariable, AbsentNonLocal)
+, FailureCause (UnboundVariable, AbsentNonLocal, CircularReference)
 , FlatValue (FlatNull, FlatBool, FlatInt, FlatStr, FlatInstance, FlatHook)
-, Methodspace (Methodspace)
 ) where
 
 import qualified Value as V
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import qualified Method as M
 import Debug.Trace
 
@@ -33,11 +33,11 @@ type ValueLog = [V.Value]
 -- independent of scope and control flow -- for instance, leaving a scope can
 -- restore a previous scope state but nothing can restore a previous pervasive
 -- state.
-data PervasiveState = PervasiveState {
+data PervasiveState a = PervasiveState {
   -- The uid stream used for generating identity.
   uids :: UidStream,
   -- Object state.
-  objects :: Map.Map V.Uid V.ObjectState,
+  objects :: Map.Map V.Uid (V.ObjectState a),
   -- The log used for testing evaluation order.
   valueLog :: ValueLog
 } deriving (Show)
@@ -63,6 +63,7 @@ data FailureCause
   | MethodNotUnderstood [(V.Value, V.Value)]
   | UnboundVariable V.Value
   | UnknownCall V.Value String [V.Value]
+  | CircularReference V.Value
   deriving (Show, Eq)
 
 -- The result of an evaluation.
@@ -74,15 +75,15 @@ data Result val fail
 -- A local continuation, the next step during normal evaluation. Continuations
 -- always continue in the scope they captured when they were created whereas the
 -- pervasive state is always passed in.
-type Continuation = V.Value -> PervasiveState -> Result (V.Value, PervasiveState) PervasiveState
+type Continuation a = V.Value -> PervasiveState a -> Result (V.Value, PervasiveState a) (PervasiveState a)
 
 endContinuation v p = Normal (v, p)
 
 -- Dynamically scoped state, that is, state that propagats from caller to
 -- callee but not the other way.
-data DynamicState = DynamicState {
+data DynamicState a = DynamicState {
   -- The top nonlocal continuation.
-  nonlocal :: V.Uid -> Continuation
+  nonlocal :: V.Uid -> Continuation a
 }
 
 absentNonlocal _ _ p0 = (Failure AbsentNonLocal p0)
@@ -92,18 +93,7 @@ emptyDynamicState = DynamicState {
   nonlocal = absentNonlocal
 }
 
--- The state that gives behavior to objects.
-data Methodspace a = Methodspace {
-  hierarchy :: a,
-  methods :: M.SigTree Integer
-}
-
--- Lexically scoped state, that is, state that doesn't propagate from caller to
--- callee nor the other way (unless there is capturing).
-data LexicalState a = LexicalState {
-  scope :: Map.Map V.Value V.Value,
-  methodspace :: Methodspace a
-}
+emptyNamespace = V.Namespace Map.empty
 
 hookScope = Map.fromList (
   [ (V.Str "log", V.Hook V.LogHook)
@@ -111,21 +101,22 @@ hookScope = Map.fromList (
   ])
 
 -- Initial empty lexical state.
-emptyLexicalState methodspace = LexicalState {
-  scope = hookScope,
-  methodspace = methodspace
+emptyLexicalState methodspace namespace = V.LexicalState {
+  V.scope = hookScope,
+  V.methodspace = methodspace,
+  V.namespace = namespace
 }
 
 -- The complete context state at a particular point in the evaluation.
 data CompleteState a = CompleteState {
-  lexical :: LexicalState a,
-  dynamic :: DynamicState,
-  pervasive :: PervasiveState
+  lexical :: V.LexicalState a,
+  dynamic :: DynamicState a,
+  pervasive :: PervasiveState a
 }
 
 -- Initial empty version of the complete evaluation state.
 emptyCompleteState behavior = CompleteState {
-  lexical = emptyLexicalState behavior,
+  lexical = emptyLexicalState behavior emptyNamespace,
   dynamic = emptyDynamicState,
   pervasive = emptyPervasiveState
 }
@@ -154,19 +145,45 @@ evalExpr expr continue s0 =
       -> Failure (ExprNotUnderstood expr) (pervasive s0)
 
 evalVariable name continue s0 =
-  if Map.member name vars
-    then continue (vars Map.! name) (pervasive s0)
-    else Failure (UnboundVariable name) (pervasive s0)
-  where vars = scope (lexical s0)
+  if Map.member name scope0
+    then continue (scope0 Map.! name) (pervasive s0)
+    else evalNamespaceVariable name continue s0
+      where
+        l0 = lexical s0
+        scope0 = V.scope l0
+
+evalNamespaceVariable name continue s0 = case Map.lookup name refs0 of
+  Nothing -> Failure (UnboundVariable name) p0
+  Just uid -> getOrCreateBinding uid
+  where
+    l0 = lexical s0
+    namespace0 = V.namespace l0
+    refs0 = V.refs namespace0
+    p0 = pervasive s0
+    objects0 = objects p0
+    getOrCreateBinding uid = case objects0 Map.! uid of
+      V.BindingObject (V.Bound v) -> continue v p0
+      V.BindingObject V.BeingBound -> Failure (CircularReference name) (p0)
+      V.BindingObject (V.Unbound expr lA) -> createBinding uid expr lA
+    createBinding uid value lA = evalExpr value (thenBind uid) sB
+      where
+        objectsB = Map.insert uid (V.BindingObject V.BeingBound) objects0
+        pB = p0 {objects=objectsB}
+        sB = s0 {lexical=lA, pervasive=pB}
+    thenBind uid value p2 = continue value p3
+      where
+        objects2 = objects p2
+        objects3 = Map.insert uid (V.BindingObject (V.Bound value)) objects2
+        p3 = p2 {objects=objects3}
 
 evalLocalBinding name valueExpr bodyExpr continue s0 = evalExpr valueExpr thenBind s0
   where
     thenBind value p1 = evalExpr bodyExpr continue s1
       where
         l0 = lexical s0
-        outerScope = scope l0
+        outerScope = V.scope l0
         innerScope = Map.insert name value outerScope
-        l1 = l0 {scope = innerScope}
+        l1 = l0 {V.scope = innerScope}
         s1 = s0 {lexical = l1, pervasive = p1}
 
 -- Evaluates a list of expressions, yielding the value of the last one (or Null
@@ -211,9 +228,9 @@ evalWithEscape name bodyExpr continue s0 = evalExpr bodyExpr continue s1
         | otherwise = nonlocal0 targetUid
     -- Give the escape hook a name in the body's scope.
     l0 = lexical s0
-    scope0 = scope l0
+    scope0 = V.scope l0
     scope1 = Map.insert name (V.Hook (V.EscapeHook escapeUid)) scope0
-    l1 = l0 {scope = scope1}
+    l1 = l0 {V.scope = scope1}
     d1 = d0 {nonlocal = nonlocal1}
     s1 = s0 {lexical = l1, dynamic = d1, pervasive = p1}
 
@@ -266,9 +283,9 @@ evalCallNative recvExpr name argsExprs continue s0 = evalExpr recvExpr thenArgs 
 evalInvoke argExprs continue s0 = evalList (map snd argExprs) thenInvoke s0
   where
     l0 = lexical s0
-    methodspace0 = methodspace l0
-    hierarchy0 = hierarchy methodspace0
-    methods0 = methods methodspace0
+    methodspace0 = V.methodspace l0
+    hierarchy0 = V.hierarchy methodspace0
+    methods0 = V.methods methodspace0
     thenInvoke argValues p1 = case method of
       Nothing -> Failure (MethodNotUnderstood argList) p1
       Just method -> continue (V.Int 0) p1
@@ -297,8 +314,8 @@ callTypeHookNative _ "!" [value] continue s0 = continue result p0
   where
     l0 = lexical s0
     p0 = pervasive s0
-    methodspace0 = methodspace l0
-    hierarchy0 = hierarchy methodspace0
+    methodspace0 = V.methodspace l0
+    hierarchy0 = V.hierarchy methodspace0
     result = V.Obj (M.typeOf hierarchy0 value)
 callTypeHookNative _ "display_name" [V.Obj uid] continue s0 = continue displayName p0
   where
@@ -392,30 +409,53 @@ flatten p (V.Obj id) = case state of
     state = objs Map.! id
 
 -- Evaluates the given expression, yielding an evaluation result
-eval :: (M.TypeHierarchy a) => Methodspace a -> V.Expr -> Result (V.Value, PervasiveState) PervasiveState
+eval :: (M.TypeHierarchy a) => V.Methodspace a -> V.Expr -> Result (V.Value, PervasiveState a) (PervasiveState a)
 eval methodspace expr = evalExpr expr endContinuation (emptyCompleteState methodspace)
 
-evalFlat :: (M.TypeHierarchy a) =>  Methodspace a -> V.Expr -> Result (FlatValue, [FlatValue]) [V.Value]
+evalFlat :: (M.TypeHierarchy a) =>  V.Methodspace a -> V.Expr -> Result (FlatValue, [FlatValue]) [V.Value]
 evalFlat behavior expr = case eval behavior expr of
   Normal (value, p0) -> Normal (flatValue, flatLog)
     where
       flatValue = flatten p0 value
-      log = (valueLog p0)
+      log = valueLog p0
       flatLog = map (flatten p0) log
   Failure cause p0 -> Failure cause (valueLog p0)
 
-evalProgram :: V.Program -> Result (V.Value, PervasiveState) PervasiveState
-evalProgram (V.Program decls body) = evalExpr body endContinuation initialState
+evalProgram :: V.Program -> Result (V.Value, PervasiveState ObjectSystemState) (PervasiveState ObjectSystemState)
+evalProgram (V.Program decls body) = evalDecls names s2
   where
+    -- Start from a completely empty state.
     p0 = emptyPervasiveState
+    -- Build the roots after which we're in p1.
     (roots, p1) = defaultRootValues p0
+    -- Set up the initial unbound namespace after which we're in p2.
+    prepareSingleBinding (V.NamespaceBinding name value) pA = (name, uid, pC)
+      where
+        (uid, pB) = genUid pA
+        objectsB = objects pB
+        state = V.BindingObject (V.Unbound value l2)
+        objectsC = Map.insert uid state objectsB
+        pC = pB {objects=objectsC}
+    prepareBindings [] (names, ids, pA) = (names, Map.fromList (zip names ids), pA)
+    prepareBindings (next:rest) (names, uids, pA) = result
+      where
+        (name, uid, pB) = prepareSingleBinding next pA
+        result = prepareBindings rest (name:names, uid:uids, pB)
+    (names, refs, p2) = prepareBindings decls ([], [], p1)
+    -- Pack everything together into a full state, s2
     oss = ObjectSystemState roots Map.empty
-    methodspace = Methodspace oss M.emptySigTree
-    initialState = CompleteState {
-      lexical = emptyLexicalState methodspace,
-      dynamic = emptyDynamicState,
-      pervasive = p1
-    }
+    methodspace2 = V.Methodspace oss M.emptySigTree
+    namespace2 = V.Namespace refs
+    l2 = emptyLexicalState methodspace2 namespace2
+    d2 = emptyDynamicState
+    s2 = CompleteState {lexical = l2, dynamic = d2, pervasive = p2}
+    -- Touch all the bindings to ensure they get evaluated and then evaluate
+    -- the body.
+    evalDecls [] sA = evalExpr body endContinuation sA
+    evalDecls (next:rest) sA = evalNamespaceVariable next thenContinue sA
+      where
+        thenContinue value pB = evalDecls rest (sA {pervasive=pB})
+
 
 evalProgramFlat :: V.Program -> Result (FlatValue, [FlatValue]) [V.Value]
 evalProgramFlat program = case evalProgram program of

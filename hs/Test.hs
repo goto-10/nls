@@ -231,18 +231,48 @@ testEvalExpr = TestLabel "evalExpr" (TestList
           [ TestCase (assertEqual "" expected cause)
           , TestCase (assertEqual "" expLog foundLog)
           ])
-    testBehavior = E.Methodspace TestHierarchy M.emptySigTree
+    testBehavior = V.Methodspace TestHierarchy M.emptySigTree
 
 testEvalProgram = TestLabel "evalProgram" (TestList
-  [ check (fSt "Integer") [] "(! .display_name $type (! $type 3))"
-  , check (fSt "Null") [] "(! .display_name $type (! $type null))"
-  , check (fSt "Bool") [] "(! .display_name $type (! $type true))"
-  , check (fSt "Bool") [] "(! .display_name $type (! $type false))"
+  [ check (fSt "Integer") [] "(program (do (! .display_name $type (! $type 3))))"
+  , check (fSt "Null") [] "(program (do (! .display_name $type (! $type null))))"
+  , check (fSt "Bool") [] "(program (do (! .display_name $type (! $type true))))"
+  , check (fSt "Bool") [] "(program (do (! .display_name $type (! $type false))))"
+  , check (fIn 4) [] (multiline
+      [ "(program"
+      , "  (def $x := 4)"
+      , "  (do $x))"
+      ])
+  , check (fIn 8) [fIn 0, fIn 2, fIn 1] (multiline
+      [ "(program"
+      , "  (def $x := (; (! $log 0) $y (! $log 1) $y))"
+      , "  (def $y := (; (! $log 2) 8))"
+      , "  (do $x))"
+      ])
+  , check fNl [fIn 5, fIn 6, fIn 7] (multiline
+      [ "(program"
+      , "  (def $a := (! $log 5))"
+      , "  (def $b := (! $log 6))"
+      , "  (def $c := (! $log 7)))"
+      ])
+  , checkFail (E.CircularReference (vSt "x")) [] (multiline
+      [ "(program"
+      , "  (def $x := $y)"
+      , "  (def $y := $z)"
+      , "  (def $z := $x)"      
+      , "  (do $x))"
+      ])
+  , checkFail (E.UnboundVariable (vSt "a")) [] (multiline
+      [ "(program"
+      , "  (def $x := (def $a := 9 in $y))"
+      , "  (def $y := $a)"
+      , "  (do $x))"
+      ])
   ])
   where
     check expected expLog input = TestLabel input testCase
       where
-        ast = V.Program [] (V.parseExpr input)
+        ast = V.parseProgram input
         result = E.evalProgramFlat ast
         testCase = case result of
           E.Normal (found, log) -> checkResult found log
@@ -251,6 +281,18 @@ testEvalProgram = TestLabel "evalProgram" (TestList
           [ TestCase (assertEqual "" expected found)
           , TestCase (assertEqual "" expLog foundLog)
           ])
+    checkFail expected expLog input = TestLabel input testCase
+      where
+        ast = V.parseProgram input
+        result = E.evalProgramFlat ast
+        testCase = case result of
+          E.Normal (found, log) -> TestCase (assertFailure ("Expected failure, found " ++ show found))
+          E.Failure cause foundLog -> checkFailure cause foundLog
+        checkFailure cause foundLog = (TestList
+          [ TestCase (assertEqual "" expected cause)
+          , TestCase (assertEqual "" expLog foundLog)
+          ])
+
 
 testMatchOrder = TestLabel "matchOrder" (TestList
   [ check (M.ScoreEq < M.ScoreIs 0)
@@ -282,26 +324,26 @@ instance M.TypeHierarchy TestHierarchy where
   superTypes _ (V.Uid n) = map V.Uid (Map.findWithDefault [] n testInheritance)
 
 testSingleGuards = TestLabel "singleGuards" (TestList
-  [ check M.ScoreAny M.Any (V.Str "foo")
-  , check M.ScoreAny M.Any (V.Int 0)
-  , check M.ScoreAny M.Any V.Null
-  , check M.ScoreAny M.Any (V.Bool True)
-  , check M.ScoreNone (M.Eq V.Null) (V.Str "foo")
-  , check M.ScoreNone (M.Eq V.Null) (V.Int 0)
-  , check M.ScoreEq (M.Eq V.Null) V.Null
-  , check (M.ScoreIs 0) (M.Is (V.Uid 2)) (V.Int 2)
-  , check (M.ScoreIs 1) (M.Is (V.Uid 1)) (V.Int 2)
-  , check (M.ScoreIs 2) (M.Is (V.Uid 0)) (V.Int 2)
-  , check M.ScoreNone (M.Is (V.Uid 2)) (V.Int 1)
-  , check (M.ScoreIs 0) (M.Is (V.Uid 1)) (V.Int 1)
-  , check (M.ScoreIs 1) (M.Is (V.Uid 0)) (V.Int 1)
-  , check M.ScoreNone (M.Is (V.Uid 2)) (V.Int 0)
-  , check M.ScoreNone (M.Is (V.Uid 1)) (V.Int 0)
-  , check (M.ScoreIs 0) (M.Is (V.Uid 0)) (V.Int 0)
-  , check (M.ScoreIs 3) (M.Is (V.Uid 0)) (V.Int 14)
-  , check (M.ScoreIs 3) (M.Is (V.Uid 0)) (V.Int 13)
-  , check (M.ScoreIs 2) (M.Is (V.Uid 0)) (V.Int 12)
-  , check M.ScoreNone (M.Is (V.Uid 0)) (V.Int 15)
+  [ check M.ScoreAny V.Any (V.Str "foo")
+  , check M.ScoreAny V.Any (V.Int 0)
+  , check M.ScoreAny V.Any V.Null
+  , check M.ScoreAny V.Any (V.Bool True)
+  , check M.ScoreNone (V.Eq V.Null) (V.Str "foo")
+  , check M.ScoreNone (V.Eq V.Null) (V.Int 0)
+  , check M.ScoreEq (V.Eq V.Null) V.Null
+  , check (M.ScoreIs 0) (V.Is (V.Uid 2)) (V.Int 2)
+  , check (M.ScoreIs 1) (V.Is (V.Uid 1)) (V.Int 2)
+  , check (M.ScoreIs 2) (V.Is (V.Uid 0)) (V.Int 2)
+  , check M.ScoreNone (V.Is (V.Uid 2)) (V.Int 1)
+  , check (M.ScoreIs 0) (V.Is (V.Uid 1)) (V.Int 1)
+  , check (M.ScoreIs 1) (V.Is (V.Uid 0)) (V.Int 1)
+  , check M.ScoreNone (V.Is (V.Uid 2)) (V.Int 0)
+  , check M.ScoreNone (V.Is (V.Uid 1)) (V.Int 0)
+  , check (M.ScoreIs 0) (V.Is (V.Uid 0)) (V.Int 0)
+  , check (M.ScoreIs 3) (V.Is (V.Uid 0)) (V.Int 14)
+  , check (M.ScoreIs 3) (V.Is (V.Uid 0)) (V.Int 13)
+  , check (M.ScoreIs 2) (V.Is (V.Uid 0)) (V.Int 12)
+  , check M.ScoreNone (V.Is (V.Uid 0)) (V.Int 15)
   ])
   where
     check expected guard value = TestCase (assertEqual "" expected result)
@@ -326,18 +368,18 @@ parseCutSignature str = result
     parseList ((S.DelimToken ";"):rest) params cuts = parseList rest [] ((reverse params):cuts)
     parseList [S.DelimToken ")"] [] cuts = (reverse cuts, [])
     parseList list@[S.DelimToken ")"] params cuts = parseList ((S.DelimToken ";"):list) params cuts
-    parseList list params cuts = parseParam list [] M.Any params cuts
+    parseList list params cuts = parseParam list [] V.Any params cuts
     parseParam ((S.IntToken n):rest) tags guard params cuts
       = parseParam rest ((V.Int n):tags) guard params cuts
     parseParam ((S.OpToken ":"):(S.OpToken "*"):rest) tags _ params cuts
-      = parseParam rest tags M.Any params cuts
+      = parseParam rest tags V.Any params cuts
     parseParam ((S.OpToken ":"):(S.OpToken "="):(S.IntToken n):rest) tags _ params cuts
-      = parseParam rest tags (M.Eq (V.Int n)) params cuts
+      = parseParam rest tags (V.Eq (V.Int n)) params cuts
     parseParam ((S.OpToken ":"):(S.WordToken "is"):(S.IntToken n):rest) tags _ params cuts
-      = parseParam rest tags (M.Is (V.Uid n)) params cuts
+      = parseParam rest tags (V.Is (V.Uid n)) params cuts
     parseParam rest tags guard params cuts = parseList rest (param:params) cuts
       where
-        param = M.Parameter tags guard
+        param = V.Parameter tags guard
     (result, _) = parseList tokens [] []
 
 -- Parse a regular non-cut signature. Having cuts is still allowed, they just
@@ -427,11 +469,11 @@ parseSigTree input = foldr parseAndMerge M.emptySigTree input
     parseAndMerge (str, value) tree = merge tree (parseCutSignature str) value
     -- Merging into an empty tree node just replaces its value. There is no case
     -- for merging into a non-empty one because that's not really meaningful.
-    merge (M.SigTree Nothing children) [] value = M.SigTree (Just value) children
+    merge (V.SigTree Nothing children) [] value = V.SigTree (Just value) children
     -- Merging into an existing tree. Here we look for an existing child that
     -- matches exactly and if there is one we merge into that. Otherwise we add
     -- a fresh child.
-    merge (M.SigTree treeValue children) (next:rest) value = newTree
+    merge (V.SigTree treeValue children) (next:rest) value = newTree
       where
         childSameAsNext (sig, tree) = (sig == next)
         newChildren = case List.findIndex childSameAsNext children of
@@ -440,7 +482,7 @@ parseSigTree input = foldr parseAndMerge M.emptySigTree input
             where
               (sig, child) = children !! i
               mergedChild = merge child rest value
-        newTree = M.SigTree treeValue newChildren
+        newTree = V.SigTree treeValue newChildren
 
 testSigTreeLookup = TestLabel "sigTreeLookup" (TestList
   [ check (Just 1) emptyTree []

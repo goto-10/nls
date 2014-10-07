@@ -1,9 +1,6 @@
 module Method
 ( Score (ScoreAny, ScoreEq, ScoreNone, ScoreIs)
 , TypeHierarchy (typeOf, superTypes)
-, Guard (Eq, Is, Any)
-, Parameter (Parameter)
-, SigTree (SigTree)
 , ScoreRecord (ScoreRecord)
 , ScoreRecordOrdering (ScoreRecordOrdering)
 , SigAssocLookupResult (Unique, Multiple, Ambiguous, None)
@@ -21,13 +18,6 @@ import qualified Data.Set as Set
 import qualified Data.Maybe as Maybe
 import Debug.Trace
 
--- Parameter guard
-data Guard
-  = Eq V.Value
-  | Is V.Uid
-  | Any
-  deriving (Show, Eq)
-
 -- The result of matching a guard against a concrete value.
 data Score
   = ScoreEq      -- An equality guard matched
@@ -43,12 +33,12 @@ class TypeHierarchy a where
   superTypes :: a -> V.Uid -> [V.Uid]
 
 -- Match a guard against a value in a particular type hierarchy.
-matchGuard :: TypeHierarchy a => a -> Guard -> V.Value -> Score
-matchGuard _ Any _ = ScoreAny
-matchGuard _ (Eq expected) value
+matchGuard :: TypeHierarchy a => a -> V.Guard -> V.Value -> Score
+matchGuard _ V.Any _ = ScoreAny
+matchGuard _ (V.Eq expected) value
     | (expected == value) = ScoreEq
     | otherwise = ScoreNone
-matchGuard hierarchy (Is uid) value = matchIsGuard hierarchy uid 0 valueType
+matchGuard hierarchy (V.Is uid) value = matchIsGuard hierarchy uid 0 valueType
   where
     valueType = typeOf hierarchy value
 
@@ -60,14 +50,6 @@ matchIsGuard hierarchy expected depth current
         supers = superTypes hierarchy current
         supermatches = map (matchIsGuard hierarchy expected (depth + 1)) supers
 
--- An individual signature parameter
-data Parameter = Parameter {
-  tags :: [V.Value],
-  guard :: Guard
-} deriving (Show, Eq)
-
--- A full method signature.
-type Signature = [Parameter]
 
 -- A set of arguments to match against a signature.
 type Arguments = Map.Map V.Value V.Value
@@ -86,13 +68,13 @@ data ScoreRecord = ScoreRecord [(V.Value, Score)]
 -- Note that this function is well-defined even if the signature contains
 -- multiple parameters that use the same parameter tag, even though that makes
 -- the signature invalid.
-matchSignature :: TypeHierarchy a => a -> Signature -> Arguments -> Maybe ScoreRecord
+matchSignature :: TypeHierarchy a => a -> V.Signature -> Arguments -> Maybe ScoreRecord
 matchSignature hierarchy signature arguments
     | tagsHaveUniqueValue = uniqueValueResult
     | otherwise = Nothing
   where
     -- Grab just the tags from the parameters.
-    sigTags = map tags signature
+    sigTags = map V.tags signature
     -- For each tag for each parameter, look for it in the invocation.
     maybeTagValues = [[Map.lookup tag arguments | tag <- tags] | tags <- sigTags]
     -- Discard the ones where lookup failed.
@@ -102,7 +84,7 @@ matchSignature hierarchy signature arguments
     -- Match the values against the guards.
     scores = map matchParameter (zip (concat tagValues) signature)
       where
-        matchParameter (arg, param) = matchGuard hierarchy (guard param) arg
+        matchParameter (arg, param) = matchGuard hierarchy (V.guard param) arg
     -- Check whether any of the guards didn't match and otherwise zip the scores
     -- together with the corresponding tags.
     worstScore = foldl max ScoreEq scores
@@ -146,7 +128,7 @@ compareScoreRecords (ScoreRecord as) (ScoreRecord bs) = (ordering, ScoreRecord m
           bScore = Map.findWithDefault ScoreAbsent tag bMap
 
 -- An associative array where they keys are signatures.
-type SigAssoc a = [(Signature, a)]
+type SigAssoc a = [(V.Signature, a)]
 
 data SigAssocLookupResult a
   -- There was one unique best matching result.
@@ -199,13 +181,9 @@ sigAssocLookup hierarchy args assoc = buildResult bestValues maxRecord isSynthet
     buildResult values _ _ = Multiple values
     grabTags (ScoreRecord assoc) = (map fst assoc)
 
--- A signature tree which maps arguments to values through multiple dispatch.
-data SigTree a = SigTree (Maybe a) [(Signature, SigTree a)]
-  deriving (Show)
+emptySigTree = V.SigTree Nothing []
 
-emptySigTree = SigTree Nothing []
-
-sigTreeLookup hierarchy (SigTree v branches) args
+sigTreeLookup hierarchy (V.SigTree v branches) args
     | Map.null args = v
     | otherwise = deeperResult
   where
