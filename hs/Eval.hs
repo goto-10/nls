@@ -155,10 +155,14 @@ evalVariable name continue s0 =
 
 -- Updates the pervasive state of an object, setting its data to the given
 -- state.
-updateObject uid state p0 = p1
+updateObject uid state1 p0 = p1
   where
     objects0 = objects p0
-    objects1 = Map.insert uid state objects0
+    noObject = V.InstanceObject V.emptyVaporInstanceState
+    state0 = Map.findWithDefault noObject uid objects0
+    objects1 = if V.isFrozen state0
+      then error ("Updating frozen object: " ++ show state0)
+      else Map.insert uid state1 objects0
     p1 = p0 {objects=objects1}
 
 -- Creates a new object with the given state, returning the object's id and the
@@ -182,7 +186,8 @@ evalNamespaceVariable name continue s0 = if hasNamespace then result else failur
     p0 = pervasive s0
     l0 = lexical s0
     Just namespaceUid = V.namespace l0
-    V.NamespaceObject bindings0 = getObject namespaceUid p0
+    namespace0 = getObject namespaceUid p0
+    bindings0 = V.namespaceBindings namespace0
     result = case Map.lookup name bindings0 of
       -- If the variable is already bound we simply look it up and continue.
       Just (V.Bound value) -> continue value p0
@@ -196,14 +201,17 @@ evalNamespaceVariable name continue s0 = if hasNamespace then result else failur
     createBinding value lA = evalExpr value thenBind sB
       where
         bindingsB = Map.insert name V.BeingBound bindings0
-        pB = updateObject namespaceUid (V.NamespaceObject bindingsB) p0
+        namespaceB = namespace0 {V.namespaceBindings=bindingsB}
+        pB = updateObject namespaceUid namespaceB p0
         dB = emptyDynamicState
         sB = CompleteState {lexical=lA, dynamic=dB, pervasive=pB}
     thenBind value p2 = continue value p3
       where
-        V.NamespaceObject bindings2 = getObject namespaceUid p2
+        namespace2 = getObject namespaceUid p2
+        bindings2 = V.namespaceBindings namespace2
         bindings3 = Map.insert name (V.Bound value) bindings2
-        p3 = updateObject namespaceUid (V.NamespaceObject bindings3) p2
+        namespace3 = namespace2 {V.namespaceBindings=bindings3}
+        p3 = updateObject namespaceUid namespace3 p2
 
 evalLocalBinding name valueExpr bodyExpr continue s0 = evalExpr valueExpr thenBind s0
   where
@@ -403,7 +411,7 @@ typeFromRoots roots value = uid
 data ObjectSystemState = ObjectSystemState {
   roots :: RootValues,
   inheritance :: Map.Map V.Uid [V.Uid]
-}
+} deriving (Show)
 
 instance M.TypeHierarchy ObjectSystemState where
   typeOf oss value = typeFromRoots (roots oss) value
@@ -468,13 +476,16 @@ namespaceBindings decls = Maybe.catMaybes (map grabBinding decls)
 -- a new pervasive state.
 lexicalForDeclarations decls methodspace0 p0 = (l1, p2)
   where
-    (namespaceUid, p1) = newObject (V.NamespaceObject Map.empty) p0
+    namespace1 = V.NamespaceObject False Map.empty
+    (namespaceUid, p1) = newObject namespace1 p0
     l1 = emptyLexicalState methodspace0 (Just namespaceUid)
     prepareSingleBinding (name, value) pA = (name, pB)
       where
-        V.NamespaceObject bindingsA = getObject namespaceUid pA
+        namespaceA = getObject namespaceUid pA
+        bindingsA = V.namespaceBindings namespaceA
         bindingsB = Map.insert name (V.Unbound value l1) bindingsA
-        pB = updateObject namespaceUid (V.NamespaceObject bindingsB) pA
+        namespaceB = namespaceA {V.namespaceBindings=bindingsB}
+        pB = updateObject namespaceUid namespaceB pA
     prepareBindings [] pA = pA
     prepareBindings (next:rest) pA = result
       where
@@ -501,10 +512,19 @@ evalProgram unified = runProgram names s2
     s2 = CompleteState {lexical = l2, dynamic = d0, pervasive = p2}
     -- Touch all the bindings to ensure they get evaluated and then evaluate
     -- the body.
-    runProgram [] sA = evalExpr body endContinuation sA
+    runProgram [] sA = evalExpr body endContinuation (freezeNamespace sA)
     runProgram (next:rest) sA = evalNamespaceVariable next thenContinue sA
       where
         thenContinue value pB = runProgram rest (sA {pervasive=pB})
+    -- Yield a new state where the lexical namespace has been marked as frozen.
+    freezeNamespace s0 = s1
+      where
+        p0 = pervasive s0
+        Just namespaceUid = V.namespace (lexical s0)
+        namespace0 = getObject namespaceUid p0
+        namespace1 = namespace0 {V.namespaceFrozen=True}
+        p1 = updateObject namespaceUid namespace1 p0
+        s1 = s0 {pervasive=p1}
 
 evalProgramFlat :: V.UnifiedProgram -> Result (FlatValue, [FlatValue]) [V.Value]
 evalProgramFlat program = case evalProgram program of

@@ -28,7 +28,7 @@ data Score
   deriving (Show, Eq, Ord)
 
 -- Provides information about where values fit within the type hierarchy.
-class TypeHierarchy a where
+class Show a => TypeHierarchy a where
   typeOf :: a -> V.Value -> V.Uid
   superTypes :: a -> V.Uid -> [V.Uid]
 

@@ -314,6 +314,7 @@ testMatchOrder = TestLabel "matchOrder" (TestList
 -- An inheritance hiararchy that only gives nontrivial types to ints and where
 -- the relationship between types is described explicitly by the map below.
 data TestHierarchy = TestHierarchy
+  deriving (Show)
 
 testInheritance = Map.fromList (
   -- 2 <: 1 <: 0

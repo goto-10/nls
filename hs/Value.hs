@@ -28,6 +28,9 @@ module Value
 , hierarchy
 , methods
 , namespace
+, isFrozen
+, namespaceBindings
+, namespaceFrozen
 ) where
 
 import qualified Sexp as S
@@ -156,8 +159,14 @@ data BindingState a
 data ObjectState a
   = InstanceObject InstanceState
   | TypeObject TypeState
-  | NamespaceObject (Map.Map Value (BindingState a))
+  | NamespaceObject {
+    namespaceFrozen :: Bool,
+    namespaceBindings :: (Map.Map Value (BindingState a))
+  }
   deriving (Show)
+
+isFrozen (NamespaceObject frozen _) = frozen
+isFrozen (InstanceObject (InstanceState phase _)) = phase == Frozen
 
 adaptExpr = adapt
   where
