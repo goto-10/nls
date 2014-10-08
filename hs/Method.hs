@@ -50,7 +50,6 @@ matchIsGuard hierarchy expected depth current
         supers = superTypes hierarchy current
         supermatches = map (matchIsGuard hierarchy expected (depth + 1)) supers
 
-
 -- A set of arguments to match against a signature.
 type Arguments = Map.Map V.Value V.Value
 

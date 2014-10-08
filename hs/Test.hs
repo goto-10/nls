@@ -255,6 +255,14 @@ testEvalProgram = TestLabel "evalProgram" (TestList
       , "  (def $b := (! $log 6))"
       , "  (def $c := (! $log 7)))"
       ])
+  {-
+  , check fNl [fIn 7, fIn 6, fIn 5] (multiline
+      [ "(program"
+      , "  (def $a := (! $log 5))"
+      , "  (def @a := (! $log 6))"
+      , "  (def @@a := (! $log 7)))"
+      ])
+  -}
   , checkFail (E.CircularReference (vSt "x")) [] (multiline
       [ "(program"
       , "  (def $x := $y)"

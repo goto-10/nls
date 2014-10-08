@@ -13,6 +13,8 @@ module Eval
 import qualified Value as V
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Data.List as List
+import qualified Data.Maybe as Maybe
 import qualified Method as M
 import Debug.Trace
 
@@ -33,11 +35,11 @@ type ValueLog = [V.Value]
 -- independent of scope and control flow -- for instance, leaving a scope can
 -- restore a previous scope state but nothing can restore a previous pervasive
 -- state.
-data PervasiveState a = PervasiveState {
+data PervasiveState hier = PervasiveState {
   -- The uid stream used for generating identity.
   uids :: UidStream,
   -- Object state.
-  objects :: Map.Map V.Uid (V.ObjectState a),
+  objects :: Map.Map V.Uid (V.ObjectState hier),
   -- The log used for testing evaluation order.
   valueLog :: ValueLog
 } deriving (Show)
@@ -51,10 +53,11 @@ emptyPervasiveState = PervasiveState {
 
 -- Given a pervasive state, returns a fresh object id and a new pervasive state
 -- to use from that point on.
-genUid state = (uid, newState)
+genUid s0 = (uid, s1)
   where
-    (uid, newUids) = nextUidFromStream (uids state)
-    newState = state { uids = newUids }
+    uids0 = uids s0
+    (uid, uids1) = nextUidFromStream uids0
+    s1 = s0 {uids = uids1}
 
 -- The possible reasons for evaluation to fail.
 data FailureCause
@@ -75,15 +78,15 @@ data Result val fail
 -- A local continuation, the next step during normal evaluation. Continuations
 -- always continue in the scope they captured when they were created whereas the
 -- pervasive state is always passed in.
-type Continuation a = V.Value -> PervasiveState a -> Result (V.Value, PervasiveState a) (PervasiveState a)
+type Continuation hier = V.Value -> PervasiveState hier -> Result (V.Value, PervasiveState hier) (PervasiveState hier)
 
 endContinuation v p = Normal (v, p)
 
 -- Dynamically scoped state, that is, state that propagats from caller to
 -- callee but not the other way.
-data DynamicState a = DynamicState {
+data DynamicState hier = DynamicState {
   -- The top nonlocal continuation.
-  nonlocal :: V.Uid -> Continuation a
+  nonlocal :: V.Uid -> Continuation hier
 }
 
 absentNonlocal _ _ p0 = (Failure AbsentNonLocal p0)
@@ -108,10 +111,10 @@ emptyLexicalState methodspace namespace = V.LexicalState {
 }
 
 -- The complete context state at a particular point in the evaluation.
-data CompleteState a = CompleteState {
-  lexical :: V.LexicalState a,
-  dynamic :: DynamicState a,
-  pervasive :: PervasiveState a
+data CompleteState hier = CompleteState {
+  lexical :: V.LexicalState hier,
+  dynamic :: DynamicState hier,
+  pervasive :: PervasiveState hier
 }
 
 -- Initial empty version of the complete evaluation state.
@@ -152,29 +155,49 @@ evalVariable name continue s0 =
         l0 = lexical s0
         scope0 = V.scope l0
 
+-- Updates the pervasive state of an object, setting its data to the given
+-- state.
+updateObject p0 uid state = p1
+  where
+    objects0 = objects p0
+    objects1 = Map.insert uid state objects0
+    p1 = p0 {objects=objects1}
+
+-- Creates a new object with the given state, returning the object's id and the
+-- state that now holds the state.
+newObject p0 state = (uid, p2)
+  where
+    (uid, p1) = genUid p0
+    p2 = updateObject p1 uid state
+
+-- Yields the state of the object with the given uid in the given pervasive
+-- state.
+getObject p0 uid = state
+  where
+    objects0 = objects p0
+    state = objects0 Map.! uid
+
 evalNamespaceVariable name continue s0 = case Map.lookup name refs0 of
   Nothing -> Failure (UnboundVariable name) p0
   Just uid -> getOrCreateBinding uid
   where
-    l0 = lexical s0
-    namespace0 = V.namespace l0
-    refs0 = V.refs namespace0
     p0 = pervasive s0
-    objects0 = objects p0
-    getOrCreateBinding uid = case objects0 Map.! uid of
-      V.BindingObject (V.Bound v) -> continue v p0
-      V.BindingObject V.BeingBound -> Failure (CircularReference name) (p0)
-      V.BindingObject (V.Unbound expr lA) -> createBinding uid expr lA
-    createBinding uid value lA = evalExpr value (thenBind uid) sB
+    refs0 = V.refs (V.namespace (lexical s0))
+    getOrCreateBinding uid = case getObject p0 uid of
+      -- If the variable is already bound we simply look it up and continue.
+      V.BindingObject (V.Bound value) -> continue value p0
+      -- If it's being bound there must have been a cycle.
+      V.BindingObject V.BeingBound -> Failure (CircularReference name) p0
+      -- If we've not seen it yet it's time to bind it
+      V.BindingObject (V.Unbound expr l1) -> createBinding uid expr l1
+    createBinding uid value l1 = evalExpr value (thenBind uid) s1
       where
-        objectsB = Map.insert uid (V.BindingObject V.BeingBound) objects0
-        pB = p0 {objects=objectsB}
-        sB = s0 {lexical=lA, pervasive=pB}
+        p1 = updateObject p0 uid (V.BindingObject V.BeingBound)
+        d0 = dynamic s0
+        s1 = CompleteState {lexical=l1, dynamic=d0, pervasive=p1}
     thenBind uid value p2 = continue value p3
       where
-        objects2 = objects p2
-        objects3 = Map.insert uid (V.BindingObject (V.Bound value)) objects2
-        p3 = p2 {objects=objects3}
+        p3 = updateObject p2 uid (V.BindingObject (V.Bound value))
 
 evalLocalBinding name valueExpr bodyExpr continue s0 = evalExpr valueExpr thenBind s0
   where
@@ -197,13 +220,10 @@ evalSequence (next:rest) continue s0 = evalExpr next thenRest s0
         s1 = s0 {pervasive = p1}
 
 -- Creates a new empty instance.
-evalNewInstance continue s0 = continue (V.Obj uid) p2
+evalNewInstance continue s0 = continue (V.Obj uid) p1
   where
-    (uid, p1) = genUid (pervasive s0)
-    state = V.emptyVaporInstanceState
-    oldObjects = objects p1
-    newObjects = Map.insert uid (V.InstanceObject state) oldObjects
-    p2 = p1 { objects = newObjects }
+    state = V.InstanceObject V.emptyVaporInstanceState
+    (uid, p1) = newObject (pervasive s0) state
 
 -- Evaluates a list of expressions, yielding a list of their values.
 evalList exprs continue s0 = evalListAccum exprs s0 []
@@ -409,10 +429,10 @@ flatten p (V.Obj id) = case state of
     state = objs Map.! id
 
 -- Evaluates the given expression, yielding an evaluation result
-eval :: (M.TypeHierarchy a) => V.Methodspace a -> V.Expr -> Result (V.Value, PervasiveState a) (PervasiveState a)
+eval :: (M.TypeHierarchy hier) => V.Methodspace hier -> V.Expr -> Result (V.Value, PervasiveState hier) (PervasiveState hier)
 eval methodspace expr = evalExpr expr endContinuation (emptyCompleteState methodspace)
 
-evalFlat :: (M.TypeHierarchy a) =>  V.Methodspace a -> V.Expr -> Result (FlatValue, [FlatValue]) [V.Value]
+evalFlat :: (M.TypeHierarchy hier) =>  V.Methodspace hier -> V.Expr -> Result (FlatValue, [FlatValue]) [V.Value]
 evalFlat behavior expr = case eval behavior expr of
   Normal (value, p0) -> Normal (flatValue, flatLog)
     where
@@ -421,43 +441,65 @@ evalFlat behavior expr = case eval behavior expr of
       flatLog = map (flatten p0) log
   Failure cause p0 -> Failure cause (valueLog p0)
 
-evalProgram :: V.Program -> Result (V.Value, PervasiveState ObjectSystemState) (PervasiveState ObjectSystemState)
-evalProgram (V.Program decls body) = evalDecls names s2
+-- Given a unified program splits it by stage. The result will be sorted by
+-- increasing stage.
+splitProgram (V.UnifiedProgram unifiedDecls body) = V.SplitProgram splitDecls body
   where
-    -- Start from a completely empty state.
-    p0 = emptyPervasiveState
-    -- Build the roots after which we're in p1.
-    (roots, p1) = defaultRootValues p0
-    -- Set up the initial unbound namespace after which we're in p2.
-    prepareSingleBinding (V.NamespaceBinding name value) pA = (name, uid, pC)
+    stagedDecls = [(stageOf decl, decl) | decl <- unifiedDecls]
+    groups = List.groupBy (\ a b -> fst a == fst b) stagedDecls
+    splitDecls = [(s, map (toSplit . snd) group) | group@((s, _):_) <- groups]
+    stageOf (V.UnifiedNamespaceBinding stage _ _) = stage 
+    toSplit (V.UnifiedNamespaceBinding _ name value) = V.SplitNamespaceBinding name value
+
+-- Given a list of split declarations returns a list of (name, value) pairs for
+-- all the namespace declarations.
+namespaceBindings decls = Maybe.catMaybes (map grabBinding decls)
+  where
+    grabBinding (V.SplitNamespaceBinding name value) = Just (name, value)
+
+-- Given a list of namespace declarations etc. yields a lexical scope where
+-- the namespace declarations have been seeded but not yet evaluated, as well as
+-- a new pervasive state.
+lexicalForDeclarations decls methodspace0 p0 = (l0, p1)
+  where
+    namespace0 = V.Namespace refs
+    l0 = emptyLexicalState methodspace0 namespace0
+    prepareSingleBinding (name, value) pA = (name, uid, pB)
       where
-        (uid, pB) = genUid pA
-        objectsB = objects pB
-        state = V.BindingObject (V.Unbound value l2)
-        objectsC = Map.insert uid state objectsB
-        pC = pB {objects=objectsC}
-    prepareBindings [] (names, ids, pA) = (names, Map.fromList (zip names ids), pA)
-    prepareBindings (next:rest) (names, uids, pA) = result
+        state = V.BindingObject (V.Unbound value l0)
+        (uid, pB) = newObject pA state
+    prepareBindings [] (bindings, pA) = (Map.fromList bindings, pA)
+    prepareBindings (next:rest) (bindings, pA) = result
       where
         (name, uid, pB) = prepareSingleBinding next pA
-        result = prepareBindings rest (name:names, uid:uids, pB)
-    (names, refs, p2) = prepareBindings decls ([], [], p1)
-    -- Pack everything together into a full state, s2
+        result = prepareBindings rest ((name, uid):bindings, pB)
+    (refs, p1) = prepareBindings (namespaceBindings decls) ([], p0)
+
+evalProgram :: V.UnifiedProgram -> Result (V.Value, PervasiveState ObjectSystemState) (PervasiveState ObjectSystemState)
+evalProgram unified = runProgram names s2
+  where
+    (decls, body) = case splitProgram unified of
+      V.SplitProgram ((_, decls):_) body -> (decls, body)
+      V.SplitProgram [] body -> ([], body)
+    -- Start from a completely empty state.
+    p0 = emptyPervasiveState
+    d0 = emptyDynamicState
+    -- Build the roots after which we're in p1.
+    (roots, p1) = defaultRootValues p0
     oss = ObjectSystemState roots Map.empty
-    methodspace2 = V.Methodspace oss M.emptySigTree
-    namespace2 = V.Namespace refs
-    l2 = emptyLexicalState methodspace2 namespace2
-    d2 = emptyDynamicState
-    s2 = CompleteState {lexical = l2, dynamic = d2, pervasive = p2}
+    methodspace1 = V.Methodspace oss M.emptySigTree
+    -- Set up the initial unbound namespace after which we're in p2.
+    names = map fst (namespaceBindings decls)
+    (l2, p2) = lexicalForDeclarations decls methodspace1 p1
+    s2 = CompleteState {lexical = l2, dynamic = d0, pervasive = p2}
     -- Touch all the bindings to ensure they get evaluated and then evaluate
     -- the body.
-    evalDecls [] sA = evalExpr body endContinuation sA
-    evalDecls (next:rest) sA = evalNamespaceVariable next thenContinue sA
+    runProgram [] sA = evalExpr body endContinuation sA
+    runProgram (next:rest) sA = evalNamespaceVariable next thenContinue sA
       where
-        thenContinue value pB = evalDecls rest (sA {pervasive=pB})
+        thenContinue value pB = runProgram rest (sA {pervasive=pB})
 
-
-evalProgramFlat :: V.Program -> Result (FlatValue, [FlatValue]) [V.Value]
+evalProgramFlat :: V.UnifiedProgram -> Result (FlatValue, [FlatValue]) [V.Value]
 evalProgramFlat program = case evalProgram program of
   Normal (value, p0) -> Normal (flatValue, flatLog)
     where

@@ -2,8 +2,10 @@ module Value
 ( parseExpr
 , parseProgram
 , Expr (Literal, Variable, Sequence, LocalBinding, NewInstance, CallNative, WithEscape, Ensure, Invoke)
-, Decl (NamespaceBinding)
-, Program (Program)
+, UnifiedDecl (UnifiedNamespaceBinding)
+, UnifiedProgram (UnifiedProgram)
+, SplitDecl (SplitNamespaceBinding)
+, SplitProgram (SplitProgram)
 , Value (Int, Str, Null, Bool, Obj, Hook)
 , Hook (LogHook, EscapeHook, TypeHook)
 , Phase (Vapor, Fluid, Frozen)
@@ -48,13 +50,22 @@ data Expr
   deriving (Show, Eq)
 
 -- Toplevel declarations
-data Decl
-  = NamespaceBinding Value Expr
+data UnifiedDecl
+  = UnifiedNamespaceBinding Int Value Expr
   deriving (Show, Eq)
 
-data Program = Program {
-  decls :: [Decl],
-  body :: Expr
+data UnifiedProgram = UnifiedProgram {
+  unifiedDecls :: [UnifiedDecl],
+  unifiedBody :: Expr
+}
+
+data SplitDecl
+  = SplitNamespaceBinding Value Expr
+  deriving (Show, Eq)
+
+data SplitProgram = SplitProgram {
+  splitDecls :: [(Int, [SplitDecl])],
+  splitBody :: Expr
 }
 
 -- A unique object id.
@@ -125,7 +136,7 @@ data LexicalState a = LexicalState {
   scope :: Map.Map Value Value,
   methodspace :: Methodspace a,
   namespace :: Namespace
-} deriving (Show, Eq)
+} deriving (Show)
 
 -- The mutable (potentially) state of an instance object.
 data InstanceState = InstanceState {
@@ -148,13 +159,13 @@ data BindingState a
   = Bound Value
   | BeingBound
   | Unbound Expr (LexicalState a)
-  deriving (Show, Eq)
+  deriving (Show)
 
 data ObjectState a
   = InstanceObject InstanceState
   | TypeObject TypeState
   | BindingObject (BindingState a)
-  deriving (Show, Eq)
+  deriving (Show)
 
 adaptExpr = adapt
   where
@@ -195,13 +206,13 @@ parseExpr str = adaptExpr (S.parseSexp str)
 parseProgram str = adaptProgram (S.parseSexp str)
   where
     adaptProgram (S.List ((S.Word "program"):rest)) = adaptToplevels rest [] nullBody
-    adaptToplevels [] decls body = Program decls body
+    adaptToplevels [] decls body = UnifiedProgram (reverse decls) body
     adaptToplevels (next:rest) decls body = case next of
       S.List [S.Word "do", expr]
         -> adaptToplevels rest decls (adaptExpr expr)
-      S.List [S.Word "def", S.Ident 0 name, S.Delim ":=", value]
+      S.List [S.Word "def", S.Ident stage name, S.Delim ":=", value]
         -> adaptToplevels rest (decl:decls) body
         where
-          decl = NamespaceBinding (Str name) (adaptExpr value)
+          decl = UnifiedNamespaceBinding stage (Str name) (adaptExpr value)
 
     nullBody = Literal Null
