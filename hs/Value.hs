@@ -10,7 +10,7 @@ module Value
 , Hook (LogHook, EscapeHook, TypeHook)
 , Phase (Vapor, Fluid, Frozen)
 , Uid (Uid)
-, ObjectState (InstanceObject, TypeObject, BindingObject)
+, ObjectState (InstanceObject, TypeObject, NamespaceObject)
 , InstanceState (InstanceState)
 , TypeState (TypeState)
 , BindingState (Bound, Unbound, BeingBound)
@@ -18,7 +18,6 @@ module Value
 , Parameter (Parameter)
 , SigTree (SigTree)
 , Signature
-, Namespace (Namespace)
 , Methodspace (Methodspace)
 , LexicalState (LexicalState)
 , tags
@@ -29,7 +28,6 @@ module Value
 , hierarchy
 , methods
 , namespace
-, refs
 ) where
 
 import qualified Sexp as S
@@ -124,18 +122,12 @@ data Methodspace a = Methodspace {
   methods :: SigTree Integer
 } deriving (Show, Eq)
 
--- A module namespace. The actual values of the mappings are stored in the
--- pervasive state since they're mutable.
-data Namespace = Namespace {
-  refs :: Map.Map Value Uid
-} deriving (Show, Eq)
-
 -- Lexically scoped state, that is, state that doesn't propagate from caller to
 -- callee nor the other way (unless there is capturing).
 data LexicalState a = LexicalState {
   scope :: Map.Map Value Value,
   methodspace :: Methodspace a,
-  namespace :: Namespace
+  namespace :: Maybe Uid
 } deriving (Show)
 
 -- The mutable (potentially) state of an instance object.
@@ -164,7 +156,7 @@ data BindingState a
 data ObjectState a
   = InstanceObject InstanceState
   | TypeObject TypeState
-  | BindingObject (BindingState a)
+  | NamespaceObject (Map.Map Value (BindingState a))
   deriving (Show)
 
 adaptExpr = adapt

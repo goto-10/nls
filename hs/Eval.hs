@@ -96,8 +96,6 @@ emptyDynamicState = DynamicState {
   nonlocal = absentNonlocal
 }
 
-emptyNamespace = V.Namespace Map.empty
-
 hookScope = Map.fromList (
   [ (V.Str "log", V.Hook V.LogHook)
   , (V.Str "type", V.Hook V.TypeHook)
@@ -119,7 +117,7 @@ data CompleteState hier = CompleteState {
 
 -- Initial empty version of the complete evaluation state.
 emptyCompleteState behavior = CompleteState {
-  lexical = emptyLexicalState behavior emptyNamespace,
+  lexical = emptyLexicalState behavior Nothing,
   dynamic = emptyDynamicState,
   pervasive = emptyPervasiveState
 }
@@ -157,7 +155,7 @@ evalVariable name continue s0 =
 
 -- Updates the pervasive state of an object, setting its data to the given
 -- state.
-updateObject p0 uid state = p1
+updateObject uid state p0 = p1
   where
     objects0 = objects p0
     objects1 = Map.insert uid state objects0
@@ -165,48 +163,56 @@ updateObject p0 uid state = p1
 
 -- Creates a new object with the given state, returning the object's id and the
 -- state that now holds the state.
-newObject p0 state = (uid, p2)
+newObject state p0 = (uid, p2)
   where
     (uid, p1) = genUid p0
-    p2 = updateObject p1 uid state
+    p2 = updateObject uid state p1
 
 -- Yields the state of the object with the given uid in the given pervasive
 -- state.
-getObject p0 uid = state
+getObject uid p0 = state
   where
     objects0 = objects p0
     state = objects0 Map.! uid
 
-evalNamespaceVariable name continue s0 = case Map.lookup name refs0 of
-  Nothing -> Failure (UnboundVariable name) p0
-  Just uid -> getOrCreateBinding uid
+evalNamespaceVariable name continue s0 = if hasNamespace then result else failure
   where
+    -- Unpack the 
+    hasNamespace = Maybe.isJust (V.namespace l0)
     p0 = pervasive s0
-    refs0 = V.refs (V.namespace (lexical s0))
-    getOrCreateBinding uid = case getObject p0 uid of
+    l0 = lexical s0
+    Just namespaceUid = V.namespace l0
+    V.NamespaceObject bindings0 = getObject namespaceUid p0
+    result = case Map.lookup name bindings0 of
       -- If the variable is already bound we simply look it up and continue.
-      V.BindingObject (V.Bound value) -> continue value p0
+      Just (V.Bound value) -> continue value p0
       -- If it's being bound there must have been a cycle.
-      V.BindingObject V.BeingBound -> Failure (CircularReference name) p0
+      Just V.BeingBound -> Failure (CircularReference name) p0
       -- If we've not seen it yet it's time to bind it
-      V.BindingObject (V.Unbound expr l1) -> createBinding uid expr l1
-    createBinding uid value l1 = evalExpr value (thenBind uid) s1
+      Just (V.Unbound expr lA) -> createBinding expr lA
+      -- If it's simply not there fail
+      Nothing -> failure
+    failure = Failure (UnboundVariable name) p0
+    createBinding value lA = evalExpr value thenBind sB
       where
-        p1 = updateObject p0 uid (V.BindingObject V.BeingBound)
-        d0 = dynamic s0
-        s1 = CompleteState {lexical=l1, dynamic=d0, pervasive=p1}
-    thenBind uid value p2 = continue value p3
+        bindingsB = Map.insert name V.BeingBound bindings0
+        pB = updateObject namespaceUid (V.NamespaceObject bindingsB) p0
+        dB = emptyDynamicState
+        sB = CompleteState {lexical=lA, dynamic=dB, pervasive=pB}
+    thenBind value p2 = continue value p3
       where
-        p3 = updateObject p2 uid (V.BindingObject (V.Bound value))
+        V.NamespaceObject bindings2 = getObject namespaceUid p2
+        bindings3 = Map.insert name (V.Bound value) bindings2
+        p3 = updateObject namespaceUid (V.NamespaceObject bindings3) p2
 
 evalLocalBinding name valueExpr bodyExpr continue s0 = evalExpr valueExpr thenBind s0
   where
     thenBind value p1 = evalExpr bodyExpr continue s1
       where
         l0 = lexical s0
-        outerScope = V.scope l0
-        innerScope = Map.insert name value outerScope
-        l1 = l0 {V.scope = innerScope}
+        scope0 = V.scope l0
+        scope1 = Map.insert name value scope0
+        l1 = l0 {V.scope = scope1}
         s1 = s0 {lexical = l1, pervasive = p1}
 
 -- Evaluates a list of expressions, yielding the value of the last one (or Null
@@ -223,7 +229,7 @@ evalSequence (next:rest) continue s0 = evalExpr next thenRest s0
 evalNewInstance continue s0 = continue (V.Obj uid) p1
   where
     state = V.InstanceObject V.emptyVaporInstanceState
-    (uid, p1) = newObject (pervasive s0) state
+    (uid, p1) = newObject state (pervasive s0)
 
 -- Evaluates a list of expressions, yielding a list of their values.
 evalList exprs continue s0 = evalListAccum exprs s0 []
@@ -460,20 +466,21 @@ namespaceBindings decls = Maybe.catMaybes (map grabBinding decls)
 -- Given a list of namespace declarations etc. yields a lexical scope where
 -- the namespace declarations have been seeded but not yet evaluated, as well as
 -- a new pervasive state.
-lexicalForDeclarations decls methodspace0 p0 = (l0, p1)
+lexicalForDeclarations decls methodspace0 p0 = (l1, p2)
   where
-    namespace0 = V.Namespace refs
-    l0 = emptyLexicalState methodspace0 namespace0
-    prepareSingleBinding (name, value) pA = (name, uid, pB)
+    (namespaceUid, p1) = newObject (V.NamespaceObject Map.empty) p0
+    l1 = emptyLexicalState methodspace0 (Just namespaceUid)
+    prepareSingleBinding (name, value) pA = (name, pB)
       where
-        state = V.BindingObject (V.Unbound value l0)
-        (uid, pB) = newObject pA state
-    prepareBindings [] (bindings, pA) = (Map.fromList bindings, pA)
-    prepareBindings (next:rest) (bindings, pA) = result
+        V.NamespaceObject bindingsA = getObject namespaceUid pA
+        bindingsB = Map.insert name (V.Unbound value l1) bindingsA
+        pB = updateObject namespaceUid (V.NamespaceObject bindingsB) pA
+    prepareBindings [] pA = pA
+    prepareBindings (next:rest) pA = result
       where
-        (name, uid, pB) = prepareSingleBinding next pA
-        result = prepareBindings rest ((name, uid):bindings, pB)
-    (refs, p1) = prepareBindings (namespaceBindings decls) ([], p0)
+        (name, pB) = prepareSingleBinding next pA
+        result = prepareBindings rest pB
+    p2 = prepareBindings (namespaceBindings decls) p1
 
 evalProgram :: V.UnifiedProgram -> Result (V.Value, PervasiveState ObjectSystemState) (PervasiveState ObjectSystemState)
 evalProgram unified = runProgram names s2
