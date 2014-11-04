@@ -5,6 +5,7 @@ import qualified Value as V
 import qualified Sexp as S
 import qualified Eval as E
 import qualified Method as M
+import qualified Syntax as Sx
 
 aLi = V.Literal
 aIn v = aLi (vIn v)
@@ -267,7 +268,7 @@ testEvalProgram = TestLabel "evalProgram" (TestList
       [ "(program"
       , "  (def $x := $y)"
       , "  (def $y := $z)"
-      , "  (def $z := $x)"      
+      , "  (def $z := $x)"
       , "  (do $x))"
       ])
   , checkFail (E.UnboundVariable (vSt "a")) [] (multiline
@@ -607,6 +608,27 @@ testSigTreeLookup = TestLabel "sigTreeLookup" (TestList
       ]
     emptyTree = parseSigTree [("()", 1)]
 
+xIn = Sx.Infix
+xIm = Sx.Implicit
+xSx = Sx.Suffix
+xPx = Sx.Prefix
+
+testClassify = TestLabel "classify" (TestList
+  [ check (Just [xIn "x"]) ["x"]
+  , check (Just [xIm]) []
+  , check (Just [xSx "a", xIn "x"]) ["a", "x"]
+  , check (Just [xSx "a", xIn "x", xPx "b"]) ["a", "x", "b"]
+  , check (Just [xSx "a", xSx "b", xIn "x"]) ["a", "b", "x"]
+  , check (Just [xIn "x", xPx "b", xPx "a"]) ["x", "b", "a"]
+  , check (Just [xIn "x", xPx "a", xPx "b"]) ["x", "a", "b"]
+  , check Nothing ["x", "x"]
+  ])
+  where
+    check expected input = TestLabel "" testCase
+      where
+        found = Sx.classify input
+        testCase = TestCase (assertEqual "" expected found)
+
 testAll = runTestTT (TestList
   [ testTokenize
   , testSexpParsing
@@ -620,6 +642,7 @@ testAll = runTestTT (TestList
   , testSigAssocLookup
   , testSigTreeLookup
   , testEvalProgram
+  , testClassify
   ])
 
 main = testAll
